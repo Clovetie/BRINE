@@ -10,6 +10,9 @@
 			"$className": "ServerScriptService",
 			"HandHoldingServer": {
 				"$path": "src/ServerScriptService/HandHoldingServer.server.luau"
+			},
+			"IslandGenerationServer": {
+				"$path": "src/ServerScriptService/IslandGenerationServer.server.luau"
 			}
 		},
 		"StarterPlayer": {

@@ -43,9 +43,68 @@ function collectLuauFiles(dir) {
 }
 
 function stripLuauCasts(source) {
-	return source
+	let out = source
+		// Type-assertion casts: `expr :: Type` and `expr :: (Type)`.
 		.replace(/::\s*[\w?]+(?:[\w?]|\.)*/g, "")
 		.replace(/::\s*\([^)]*\)/g, "");
+
+	// Luau `continue` statement: substitute a benign Lua 5.1 no-op statement.
+	out = out.replace(/(^|[^\w])continue(?=\s|$)/g, "$1do end");
+
+	// Turn Luau interpolated strings (`text {expr}`) into plain quoted strings
+	// so luaparse (Lua 5.1) doesn't choke on the backticks.
+	out = out.replace(/`(?:[^`\\]|\\.)*`/g, '"<interpolated>"');
+
+	// Expand Luau compound assignment operators (+=, -=, *=, /=, //=, ^=, ..=)
+	// into plain `x = x op expr` form. Supports an optional statement prefix
+	// (e.g. `then x += 1`). Comment lines are left untouched.
+	out = out
+		.split("\n")
+		.map((line) => {
+			// Never transform comment lines (including divider lines like
+			// `--===`); comments never appear mid-line in this codebase.
+			const stripped = line.trimStart();
+			if (stripped.startsWith("--")) {
+				return line;
+			}
+			const m = line.match(
+				/^(\s*(?:.*?\b(?:then|else|do)\s+)?)([A-Za-z_][\w.\[\]]*)\s*(?:\.\.|\/\/)?([+\-*/%^])=\s*(.*?)\s*;?\s*(end)?\s*$/
+			);
+			if (!m) {
+				return line;
+			}
+			const prefix = m[1];
+			const lvalue = m[2];
+			const op = m[3];
+			const tail = m[5] ? " end" : "";
+			return `${prefix}${lvalue} = ${lvalue} ${op} (${m[4]})${tail}`;
+		})
+		.join("\n");
+
+	// Remove Luau declaration type annotations line-by-line so a pattern can
+	// never cross a line boundary into a statement, and so a method-call colon
+	// (`obj:Foo(...)` - the line then continues with the call args) is left
+	// intact: call colons always precede an identifier immediately followed by
+	// `(`, whereas annotation colons precede a Type that ends the declaration.
+	out = out
+		.split("\n")
+		.map((line) => {
+			let s = line;
+			// A type-annotation colon is never immediately followed (after
+			// optional space) by `(`` - that is always a method-call colon,
+			// which must be preserved. `(?!\\s*\\()` enforces that.
+			// 1) Return type after `)` (may be a nested table type with commas).
+			s = s.replace(/\)\s*:(?!\s*\()\s*[^;=()]*$/, ")");
+			// 2) `: <type>` immediately followed by `,` `=` or `)` on the same
+			//    line -> drop the type, keep the delimiter (params / bindings).
+			s = s.replace(/:(?!\s*\()\s*[^,:;=(){}]*?(\{[^{}]*\})?\s*(?=\s*[,=)])/g, "");
+			// 3) `: <type>` at end of line after a binding identifier (covers
+			//    multi-line parameter lists and `local x: Type`).
+			s = s.replace(/([A-Za-z_]\w*)\s*:(?!\s*\()\s*[^,;=()]*$/, "$1");
+			return s;
+		})
+		.join("\n");
+	return out;
 }
 
 function resolveTargets(argv) {
