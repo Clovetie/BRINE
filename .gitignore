@@ -1,0 +1,16 @@
+# Rojo build output
+*.rbxlx
+*.rbxmx
+*.rbxm
+build/
+
+# Rokit / Wally
+.rokit/
+Packages/
+packages/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store

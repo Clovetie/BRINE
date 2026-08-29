@@ -1,0 +1,10 @@
+{
+	"name": "BRINE",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$className": "ReplicatedStorage",
+			"$path": "src/ReplicatedStorage"
+		}
+	}
+}
