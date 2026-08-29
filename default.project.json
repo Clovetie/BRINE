@@ -5,6 +5,21 @@
 		"ReplicatedStorage": {
 			"$className": "ReplicatedStorage",
 			"$path": "src/ReplicatedStorage"
+		},
+		"ServerScriptService": {
+			"$className": "ServerScriptService",
+			"HandHoldingServer": {
+				"$path": "src/ServerScriptService/HandHoldingServer.server.luau"
+			}
+		},
+		"StarterPlayer": {
+			"$className": "StarterPlayer",
+			"StarterPlayerScripts": {
+				"$className": "StarterPlayerScripts",
+				"HandHoldingClient": {
+					"$path": "src/StarterPlayerScripts/HandHoldingClient.client.luau"
+				}
+			}
 		}
 	}
 }

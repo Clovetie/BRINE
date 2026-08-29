@@ -1,0 +1,11 @@
+{
+	"name": "brine-tools",
+	"private": true,
+	"description": "Local tooling for checking BRINE Luau scripts.",
+	"scripts": {
+		"check": "node check-syntax.js"
+	},
+	"dependencies": {
+		"luaparse": "0.3.1"
+	}
+}

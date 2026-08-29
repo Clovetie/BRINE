@@ -9,6 +9,10 @@ build/
 Packages/
 packages/
 
+# Local Lua tooling cache
+.tools/
+tools/node_modules/
+
 # Editors
 .vscode/
 .idea/

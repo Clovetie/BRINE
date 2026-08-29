@@ -79,6 +79,14 @@ rojo serve                    # live sync into an open place
 local v3.new = Vector3.new
 ```
 
+## Also in this repo
+
+`src/` also contains a small R15/`IKControl` hand-holding system under
+`ReplicatedStorage/HandHolding`, `ServerScriptService`, and
+`StarterPlayerScripts`. See [`HAND_HOLDING.md`](HAND_HOLDING.md) for the full
+hierarchy, protocol, and edge-case walkthrough. Reusable Luau syntax/lint
+tooling lives in [`tools/`](tools/README.md).
+
 That is not valid Luau — the compiler rejects it with
 `Expected identifier when parsing expression, got '.'`. Every call site uses
 `v3.new(...)` / `v2.new(...)`, so the aliases were renamed to match the
