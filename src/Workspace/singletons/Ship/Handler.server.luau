@@ -1,0 +1,87 @@
+--!native
+--!strict
+--!optimize 2
+
+-- Ship singleton. The model must contain Main, VehicleSeat, and Client.
+local Ship = script.Parent
+local Players = game:GetService("Players")
+local PhysicsService = game:GetService("PhysicsService")
+
+local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
+Ship:WaitForChild("Main")
+VehicleSeat:SetNetworkOwner(nil)
+
+local function registerCollisionGroup(name: string)
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(name)
+	end)
+end
+
+registerCollisionGroup("Ship")
+registerCollisionGroup("ShipIsland")
+PhysicsService:CollisionGroupSetCollidable("Ship", "ShipIsland", false)
+
+local function markIsland(instance: Instance)
+	if instance:IsA("BasePart") then
+		instance.CollisionGroup = "ShipIsland"
+	end
+end
+
+local map = workspace:FindFirstChild("Map")
+if map then
+	for _, instance in ipairs(map:GetDescendants()) do
+		markIsland(instance)
+	end
+	map.DescendantAdded:Connect(markIsland)
+end
+
+for _, instance in ipairs(Ship:GetDescendants()) do
+	if instance:IsA("BasePart") then
+		instance.CollisionGroup = "Ship"
+	end
+end
+
+local lastPlayer: Player? = nil
+
+local function occupantChanged()
+	local occupant = VehicleSeat.Occupant
+	if occupant then
+		local player = Players:GetPlayerFromCharacter(occupant.Parent)
+		if player then
+			if lastPlayer and lastPlayer ~= player then
+				local oldClient = lastPlayer.PlayerGui:FindFirstChild("Client")
+				if oldClient then
+					oldClient:Destroy()
+				end
+			end
+
+			if not player.PlayerGui:FindFirstChild("Client") then
+				local client = script:WaitForChild("Client"):Clone()
+				local shipReference = Instance.new("ObjectValue")
+				shipReference.Name = "Ship"
+				shipReference.Value = Ship
+				shipReference.Parent = client
+				client.Parent = player.PlayerGui
+				client.Enabled = true
+			end
+
+			for _, instance in ipairs(Ship:GetDescendants()) do
+				if instance:IsA("BasePart") and instance:CanSetNetworkOwnership() then
+					instance:SetNetworkOwner(player)
+				end
+			end
+			lastPlayer = player
+		end
+	else
+		if lastPlayer then
+			local client = lastPlayer.PlayerGui:FindFirstChild("Client")
+			if client then
+				client:Destroy()
+			end
+			lastPlayer = nil
+		end
+		VehicleSeat:SetNetworkOwner(nil)
+	end
+end
+
+VehicleSeat:GetPropertyChangedSignal("Occupant"):Connect(occupantChanged)

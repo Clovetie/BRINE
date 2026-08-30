@@ -86,10 +86,12 @@ local v3.new = Vector3.new
 `StarterPlayerScripts`. It uses a server-side `BallSocketConstraint` for a
 real pullable connection and `L` is a toggle. See
 [`HAND_HOLDING.md`](HAND_HOLDING.md) for the full hierarchy, protocol, and
-edge-case walkthrough. The supplied boat handler's modern mover conversion and
-island collision-group fix are documented in
-[`BOAT_HANDLER.md`](BOAT_HANDLER.md). Reusable Luau syntax/lint tooling lives
-in [`tools/`](tools/README.md).
+edge-case walkthrough.
+
+The boat singleton is mapped to `Workspace.singletons.Ship`, with its
+`Handler` and `Client` scripts alongside the ship model. It uses modern mover
+constraints and a ship/island collision-group fix so it cannot climb onto
+islands. Reusable Luau syntax/lint tooling lives in [`tools/`](tools/README.md).
 
 That is not valid Luau — the compiler rejects it with
 `Expected identifier when parsing expression, got '.'`. Every call site uses
