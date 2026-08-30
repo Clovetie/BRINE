@@ -1,0 +1,28 @@
+{
+	"name": "BRINE",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$className": "ReplicatedStorage",
+			"$path": "src/ReplicatedStorage"
+		},
+		"ServerScriptService": {
+			"$className": "ServerScriptService",
+			"HandHoldingServer": {
+				"$path": "src/ServerScriptService/HandHoldingServer.server.luau"
+			},
+			"IslandGenerationServer": {
+				"$path": "src/ServerScriptService/IslandGenerationServer.server.luau"
+			}
+		},
+		"StarterPlayer": {
+			"$className": "StarterPlayer",
+			"StarterPlayerScripts": {
+				"$className": "StarterPlayerScripts",
+				"HandHoldingClient": {
+					"$path": "src/StarterPlayerScripts/HandHoldingClient.client.luau"
+				}
+			}
+		}
+	}
+}

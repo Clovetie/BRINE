@@ -1,0 +1,20 @@
+# Rojo build output
+*.rbxlx
+*.rbxmx
+*.rbxm
+build/
+
+# Rokit / Wally
+.rokit/
+Packages/
+packages/
+
+# Local Lua tooling cache
+.tools/
+tools/node_modules/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
