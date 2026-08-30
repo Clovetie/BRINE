@@ -1,5 +1,12 @@
 # Island Generation — Brainstorm + Prompt for the Next AI
 
+> **Superseded.** This describes the older *procedural* island generator
+> (EditableMesh + noise + generated structures). The current implementation is
+> **premade-template based**: islands are authored as complete `Model`s under
+> `ServerStorage.Islands`, discovered recursively, and cloned into
+> `workspace.Map`. See [`ISLAND_GENERATION.md`](ISLAND_GENERATION.md) for the
+> current design. Parts of this document are kept for historical context.
+
 This document is **design, not implementation**. It summarizes how island
 generation should fit into the existing BRINE ocean project and ends with a
 **paste-ready prompt** the next AI can use to implement it.

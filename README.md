@@ -110,6 +110,9 @@ hierarchy above and are not created by this project:
   scans it for islands.
 - `workspace.GlobalWind` — a `Vector3Value`/part read by
   `Settings.BrownianMotionWaves`.
+- `ServerStorage.Islands` — the premade island templates (biome folders, any
+  nesting) the island generator clones into `workspace.Map`. See
+  [`ISLAND_GENERATION.md`](ISLAND_GENERATION.md).
 - Islands must be `Model`s tagged `Island` with a `Center` part (and an
   optional `Radius` IntValue) for `ZoneManager` to pick them up.
 

@@ -4,18 +4,43 @@
 --[[
 	IslandConfig
 	============
-	Data-only tuning module for the island generator. There is NO logic here:
-	every knob a user would want to tweak lives in this file and is read by
-	IslandGenerator at generation time.
+	Data-only tuning module for the PREMADE island placement system.
+
+	There is NO geometry, noise or mesh code here. Islands are authored by hand
+	as complete Models inside ServerStorage.Islands; this module only tunes how
+	the generator discovers, picks and scatters those premade templates into the
+	world.
+
+	Expected hierarchy (arbitrary nesting is supported):
+
+		ServerStorage
+		└── Islands                    (Config.PremadeIslandsRoot)
+		    ├── Jungle                 (biome folder)
+		    │   ├── Islet/…/MyIsland   (island Models, any folder depth)
+		    │   └── IslandA            (a premade island Model)
+		    ├── Snow                   (another biome folder)
+		    └── LooseIsland            (a Model directly under the root —
+		                                 assigned Config.DefaultBiome)
+
+	Each premade island must satisfy the contract the ocean already relies on
+	(see ZoneManager / Helper):
+
+		Island (Model) — PrimaryPart = Center
+		├── Center   BasePart (Config.CenterPartName) — the node anchor; its
+		│            Position is the island center and its Y is the waterline.
+		└── Radius   IntValue (Config.RadiusValueName) — island radius in studs.
+
+	If a premade island is missing Center/Radius, the generator creates/derives
+	them (Center at the model's bounding-box center, Radius from the bounding
+	box, then Config.DefaultRadius).
 
 	Conventions:
 		* Every weight is optional. A missing Weight falls back to DEFAULT_WEIGHT.
 		  An explicit Weight of 0 removes the entry from its weighted pool; if a
 		  pool ends up with a total weight of 0, the picker falls back to a
 		  uniform random choice so generation never breaks.
-		* Heights are expressed in studs ABOVE the water plane. The water plane
-		  itself is Settings.GRID_SETTINGS.PLANE_OFFSET (Y = 25 by default) and is
-		  mirrored here as PlaneOffset so nothing is hardcoded to 0.
+		* All vertical placement is relative to the water plane, mirrored from
+		  Settings.GRID_SETTINGS.PLANE_OFFSET.Y (25 by default).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23,319 +48,85 @@ local Settings = require(ReplicatedStorage.Gerstner.Settings)
 
 local IslandConfig = {}
 
--- Weight used whenever a category/structure omits `Weight`.
+-- Weight used whenever a biome/template omits `Weight`.
 IslandConfig.DEFAULT_WEIGHT = 1
 
--- Water level the islands shorelines align to. Mirrored from the ocean
--- settings so changing PLANE_OFFSET in Gerstner/Settings moves island
--- shorelines with it automatically.
+-- Water level the islands' shorelines align to. Mirrored from the ocean
+-- settings (ReplicatedStorage.Gerstner.Settings.GRID_SETTINGS.PLANE_OFFSET.Y)
+-- so changing PLANE_OFFSET moves premade islands with it automatically.
+-- Scripting docs: https://create.roblox.com/docs/scripting
 IslandConfig.PlaneOffset = Settings.GRID_SETTINGS.PLANE_OFFSET.Y
 
--- How deep (below the water plane) the shelf sits at the island rim, and how
--- far the closed "skirt" of the mesh extends down. The skirt must reach below
--- the ocean's DEPTH_RAY_LENGTH (15) so depth raycasts always hit land.
-IslandConfig.ShelfDepth = 2.5
-IslandConfig.SkirtDepth = 28
+-- The ServerStorage folder that holds every premade island. ServerStorage is
+-- NOT replicated to clients, so templates never reach the player until the
+-- server clones them into workspace. See:
+-- https://create.roblox.com/docs/reference/engine/classes/ServerStorage
+IslandConfig.PremadeIslandsRoot = "Islands"
 
---==========================================================================
--- BIOME CATEGORIES
---==========================================================================
--- Each biome tints the generated terrain and owns a weighted structure pool.
---   Weight        : relative spawn weight (missing -> DEFAULT_WEIGHT)
---   Colors        : vertex palette (Sand at the shore, Grass inland, Rock on
---                   cliffs/peaks, Snow above SnowLine, Underwater shelf)
---   SnowLine      : fraction of MaxHeight above which snow appears (nil = none)
---   RockSteepness: terrain normal.Y below which the surface paints as rock
---   BeachHeight   : height (studs) of the sandy beach band above water
---   RockLine      : fraction of MaxHeight where bare rock starts taking over
---   Structures    : [structureId] = weight inside this biome's pool
---==========================================================================
-IslandConfig.BiomeCategories = {
-	Jungle = {
-		Weight = 5,
-		Colors = {
-			Sand = Color3.fromRGB(226, 209, 164),
-			Grass = Color3.fromRGB(86, 142, 66),
-			Rock = Color3.fromRGB(108, 110, 102),
-			Snow = nil,
-			Underwater = Color3.fromRGB(84, 110, 86),
-		},
-		SnowLine = nil,
-		RockSteepness = 0.72,
-		BeachHeight = 2.6,
-		RockLine = 0.62,
-		Structures = {
-			Shipwreck = 3,
-			Ruins = 2,
-			Dock = 4,
-			Barrel = 3,
-			Crate = 3,
-			Buoy = 1,
-			Debris = 2,
-		},
-	},
-
-	Snow = {
-		Weight = 3,
-		Colors = {
-			Sand = Color3.fromRGB(198, 203, 208),
-			Grass = Color3.fromRGB(148, 166, 152),
-			Rock = Color3.fromRGB(92, 98, 108),
-			Snow = Color3.fromRGB(238, 243, 249),
-			Underwater = Color3.fromRGB(72, 92, 108),
-		},
-		SnowLine = 0.45,
-		RockSteepness = 0.7,
-		BeachHeight = 2.0,
-		RockLine = 0.55,
-		Structures = {
-			Shipwreck = 4,
-			Ruins = 2,
-			Dock = 2,
-			Barrel = 2,
-			Crate = 2,
-			Buoy = 2,
-			Debris = 3,
-		},
-	},
-
-	Desert = {
-		Weight = 3,
-		Colors = {
-			Sand = Color3.fromRGB(224, 197, 142),
-			Grass = Color3.fromRGB(196, 172, 112),
-			Rock = Color3.fromRGB(150, 106, 78),
-			Snow = nil,
-			Underwater = Color3.fromRGB(122, 108, 80),
-		},
-		SnowLine = nil,
-		RockSteepness = 0.74,
-		BeachHeight = 3.2,
-		RockLine = 0.66,
-		Structures = {
-			Shipwreck = 3,
-			Ruins = 3,
-			Dock = 2,
-			Barrel = 2,
-			Crate = 2,
-			Buoy = 1,
-			Debris = 3,
-		},
-	},
+-- Optional per-biome weight override. Biomes are auto-discovered as subfolders
+-- inside ServerStorage.<PremadeIslandsRoot>. If a folder's name has an entry
+-- here that weight is used; otherwise the entry falls back to DEFAULT_WEIGHT.
+-- A weight <= 0 excludes that biome folder from generation.
+IslandConfig.BiomeWeights = {
+	-- Jungle = 5,
+	-- Snow   = 2,
+	-- Desert = 1,
 }
 
---==========================================================================
--- ISLAND TYPE CATEGORIES
---==========================================================================
--- Controls island footprint + silhouette.
---   Kind      : "Island" (normal), "Atoll" (ring + lagoon)
---   RadiusMin/Max: range (studs) a procedural radius is rolled in
---   MaxHeight : peak terrain height above the water plane
---   Resolution: optional mesh-grid override (see Generation.MeshSpacing)
---==========================================================================
-IslandConfig.TypeCategories = {
-	Islet = {
-		Weight = 5,
-		Kind = "Island",
-		RadiusMin = 45,
-		RadiusMax = 85,
-		MaxHeight = 13,
-	},
-	Atoll = {
-		Weight = 2,
-		Kind = "Atoll",
-		RadiusMin = 95,
-		RadiusMax = 135,
-		MaxHeight = 7,
-	},
-	Mainland = {
-		Weight = 1,
-		Kind = "Island",
-		RadiusMin = 150,
-		RadiusMax = 220,
-		MaxHeight = 36,
-	},
-}
+-- Biome label applied to Models that sit directly under the root (i.e. not
+-- inside any biome folder). Handles the "loose island" edge case.
+IslandConfig.DefaultBiome = "General"
+
+-- Fallback radius used when a premade island has no Radius IntValue and its
+-- bounding box has no XZ extent.
+IslandConfig.DefaultRadius = 70
+
+-- Names of the contract parts inside a premade island Model.
+IslandConfig.CenterPartName = "Center"
+IslandConfig.RadiusValueName = "Radius"
+
+-- Size/anchoring for a Center part the generator creates when a template has
+-- none. Kept as a 1x1x1 anchored, non-collidable part to match the contract.
+IslandConfig.CenterPartSize = Vector3.new(1, 1, 1)
 
 --==========================================================================
--- STRUCTURE DEFINITIONS
---==========================================================================
--- Mode     : "Anchored" (fixed, explorable) or "Floating" (bobs on waves)
--- Category : "Land" (raycasts down onto the island) or "Water" (shore/sea)
--- Footprint: radius in studs used for overlap checks
--- MinRadius/MaxRadius: island radius range the structure can spawn on
--- AboveWater/Draft : for Anchored water structures - how much sits above /
---                    below the water plane
--- RideHeight: for Floating objects - target offset of the root above a wave
---==========================================================================
-IslandConfig.StructureDefinitions = {
-	Shipwreck = {
-		Weight = 3,
-		Mode = "Anchored",
-		Category = "Water",
-		Footprint = 14,
-		MinRadius = 55,
-		MaxRadius = math.huge,
-		AboveWater = 3.5,
-		Draft = 2.5,
-		Color = Color3.fromRGB(74, 55, 38),
-		Material = Enum.Material.Wood,
-	},
-
-	Ruins = {
-		Weight = 2,
-		Mode = "Anchored",
-		Category = "Land",
-		Footprint = 10,
-		MinRadius = 40,
-		MaxRadius = math.huge,
-		AboveWater = 0,
-		Draft = 0,
-		Color = Color3.fromRGB(150, 150, 144),
-		Material = Enum.Material.Slate,
-	},
-
-	Dock = {
-		Weight = 4,
-		Mode = "Anchored",
-		Category = "Water",
-		Footprint = 12,
-		MinRadius = 45,
-		MaxRadius = math.huge,
-		AboveWater = 1.0, -- deck height above the water plane
-		Draft = 7, -- post length below the deck
-		Color = Color3.fromRGB(112, 84, 54),
-		Material = Enum.Material.WoodPlanks,
-	},
-
-	-- -- -- -- -- Floating debris -- -- -- -- --
-	Barrel = {
-		Weight = 3,
-		Mode = "Floating",
-		Category = "Water",
-		Footprint = 3,
-		MinRadius = 0,
-		MaxRadius = math.huge,
-		RideHeight = 0.4,
-		Color = Color3.fromRGB(96, 70, 42),
-		Material = Enum.Material.Wood,
-	},
-	Crate = {
-		Weight = 3,
-		Mode = "Floating",
-		Category = "Water",
-		Footprint = 3,
-		MinRadius = 0,
-		MaxRadius = math.huge,
-		RideHeight = 0.5,
-		Color = Color3.fromRGB(134, 98, 58),
-		Material = Enum.Material.WoodPlanks,
-	},
-	Buoy = {
-		Weight = 1,
-		Mode = "Floating",
-		Category = "Water",
-		Footprint = 3,
-		MinRadius = 0,
-		MaxRadius = math.huge,
-		RideHeight = 0.6,
-		Color = Color3.fromRGB(196, 64, 48),
-		Material = Enum.Material.Plastic,
-	},
-	Debris = {
-		Weight = 2,
-		Mode = "Floating",
-		Category = "Water",
-		Footprint = 4,
-		MinRadius = 0,
-		MaxRadius = math.huge,
-		RideHeight = 0.25,
-		Color = Color3.fromRGB(104, 82, 56),
-		Material = Enum.Material.Wood,
-	},
-}
-
---==========================================================================
--- PLACEMENT
+-- PLACEMENT / SCATTER
 --==========================================================================
 IslandConfig.Placement = {
-	GenerateProcedural = true, -- fill the world with islands if no/ few anchors
-	WorldRadius = 2600, -- islands are scattered within this radius of origin
-	CellSize = 360, -- jittered-grid spacing for procedural placement
-	GridJitter = 0.45, -- random offset per cell, as a fraction of CellSize
-	SpawnSafetyRadius = 320, -- keep this radius around world origin island-free
-	SpacingPadding = 70, -- extra gap added to (rA + rB) between islands
-	MaxPlacementAttempts = 14, -- placement tries per island before giving up
+	-- Scatter islands within this radius of the world origin.
+	WorldRadius = 2600,
 
-	MaxStructuresPerIsland = 4, -- anchored structures (wreck/ruins/dock)
-	MaxFloatingObjectsPerIsland = 3, -- floating debris per island
-	MaxFloatingObjectsTotal = 48, -- hard global cap for Heartbeat performance
+	-- Jittered-grid cell size; candidate positions are generated on this grid.
+	CellSize = 360,
 
-	StructuresOverlapPadding = 4, -- extra studs between structure footprints
-	StructureGroundEmbed = 0.6, -- how far land structures sink into the ground
-}
+	-- Random offset per cell, as a fraction of CellSize. Makes the grid look
+	-- organic instead of a rigid lattice.
+	GridJitter = 0.45,
 
---==========================================================================
--- GENERATION / MESH
---==========================================================================
-IslandConfig.Generation = {
-	-- Vertex spacing target (studs). Grid resolution is derived per island from
-	-- its diameter, then clamped to Min/MaxResolution. Smaller spacing =
-	-- smoother terrain = more triangles.
-	MeshSpacing = 8,
-	MinResolution = 28,
-	MaxResolution = 72,
+	-- Keep this radius around world origin island-free (spawn safety).
+	SpawnSafetyRadius = 320,
 
-	-- fBm noise octaves for the heightmap.
-	NoiseOctaves = 4,
+	-- Extra gap added to (rA + rB) between island centers (island overlap pad).
+	SpacingPadding = 70,
 
-	-- Batching: how many islands to build per yielded batch, and how many mesh
-	-- vertices/attributes to push between task.wait()s, so a huge world never
-	-- freezes the server for a frame.
-	IslandsPerBatch = 1,
-	VertexBudgetPerFrame = 500,
+	-- How many times per grid cell the generator re-rolls position + template
+	-- before giving up on that cell, so a colliding spot becomes a new spot
+	-- rather than an overlapping island.
+	MaxPlacementAttempts = 16,
 
-	-- Collision fidelity for the terrain MeshPart. PreciseConvexDecomposition
-	-- gives walkable concave hills; the generator retries with Default on
-	-- failure, and finally falls back to a plain Part if mesh creation fails.
-	CollisionFidelity = Enum.CollisionFidelity.PreciseConvexDecomposition,
+	-- Extra margin added around an island footprint when querying workspace
+	-- parts, so a spot that merely grazes a boat/player/prop is rejected.
+	ObstaclePadding = 8,
 
-	-- SmoothPlastic renders vertex colors cleanly. Terrain is vertex-colored.
-	TerrainMaterial = Enum.Material.SmoothPlastic,
+	-- Estimate of the largest possible premade island radius, used to widen the
+	-- octree overlap search so a big neighbour is never missed.
+	MaxIslandRadius = 400,
 
-	-- Cheap LOD: islands farther than LOD.Distance from origin use a coarser
-	-- mesh (resolution * LOD.ResolutionFactor). Deterministic, purely visual.
-	LOD = {
-		Distance = 1900,
-		ResolutionFactor = 0.65,
-	},
-}
-
---==========================================================================
--- FLOATING OBJECTS
---==========================================================================
-IslandConfig.Floating = {
-	-- Anchored bob is the default (stable, cheap, can never drift into boats).
-	-- EnablePhysics = true switches to unanchored parts driven by a VectorForce
-	-- spring + AlignOrientation. It looks the same but lets small objects nudge.
-	EnablePhysics = false,
-
-	-- Anchored-bob debris does not collide (so it can never block boats or
-	-- players). Physics mode forces CanCollide = true so objects can beach.
-	CanCollide = false,
-
-	-- Heartbeat cost control: BoatManager buoyancy is sampled for this many
-	-- floating objects per frame (round-robin). 8 objects/frame keeps the
-	-- amortized cost negligible even at the global cap.
-	UpdatesPerFrame = 8,
-
-	-- Physics-mode spring tuning (mass-normalized). Position spring k/d for Y
-	-- (hovering on the wave) and XZ (leash back to spawn point).
-	SpringK = 28,
-	SpringD = 9,
-	LeashK = 6,
-	LeashD = 4,
-	MaxForce = 120000,
+	-- Anchor every BasePart of a placed island. Premade islands are authored in
+	-- Studio and may not be anchored; unanchored parts would fall out of the
+	-- world when cloned into Workspace. Turn this off only if a template relies
+	-- on physics/motion.
+	AnchorPlacedIslands = true,
 }
 
 return IslandConfig
