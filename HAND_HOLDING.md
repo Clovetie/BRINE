@@ -4,10 +4,12 @@ A simple, player-hosted hand-holding interaction for R15 characters.
 
 - Player presses `L` once while facing a nearby player to offer/accept.
 - Player presses `L` again to release; `L` is a **toggle**, not a hold key.
-- When both players have toggled on and the server accepts the interaction, a
-  real server-created `BallSocketConstraint` joins the selected hand
-  attachments. Both character assemblies can therefore pull each other.
-- `IKControl` is used only to pose the arms toward the physical joint.
+- When both players have toggled on and the server accepts the interaction,
+  each character receives an independent, horizontal `VectorForce` spring.
+  Players can walk separately and are pulled toward each other only after the
+  tether's rest distance is exceeded.
+- `IKControl` is used only to pose the arms toward the midpoint; no constraint
+  joins the two character assemblies.
 - Releasing `L`, dying, respawning, leaving, or moving too far apart breaks the
   connection.
 
@@ -126,11 +128,10 @@ On a mutual offer the server:
 2. Re-checks the distance between their `HumanoidRootPart`s.
 3. Picks the closest hand pair: `A.LeftHand`/`A.RightHand` vs
    `B.LeftHand`/`B.RightHand`.
-4. Creates an attachment on each selected hand and joins them with a
-   server-side `BallSocketConstraint`.
-5. Creates temporary `NoCollisionConstraint` instances for every BasePart pair
-   in the two characters, including accessory handles, so the players cannot
-   push each other upward or ride on one another's heads.
+4. Creates an `IKControl` for each selected hand and targets the midpoint
+   between the hands.
+5. Adds equal/opposite horizontal spring forces to each character root once
+   they exceed `REST_DISTANCE`; the assemblies remain independent.
 6. For each side it creates an `IKControl`:
 
    ```lua
@@ -193,7 +194,7 @@ trusted.
 | 15. Missing IK/target parts | `createIkSetup` returns `nil` if any R15 chain part is missing; establishment fails safely. |
 | 16. Non-R15 | `isValidR15Character` rejects anything that is not a valid R15 character. |
 | 17. Animation vs IK | The IK control owns the chain between the upper arm and hand. Its `Weight` is faded in/out and `Enabled` is managed by the server to avoid fighting the default animation. |
-| 18. Players turn/move while holding | The hand attachments are joined by a server-side `BallSocketConstraint`, so the players remain physically connected and can pull each other. The target attachments follow the midpoint each frame, so IK can compensate as players move or turn. |
+| 18. Players turn/move while holding | The character assemblies remain independent. Equal/opposite horizontal spring forces pull them together only beyond `REST_DISTANCE`; the midpoint targets keep the hand pose aligned. |
 
 ---
 
