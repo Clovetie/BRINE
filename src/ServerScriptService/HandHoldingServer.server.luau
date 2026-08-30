@@ -169,11 +169,22 @@ local function destroySetup(setup)
 	end
 end
 
+local function destroyCollisionFilters(connection)
+	if not connection or not connection.noCollisionConstraints then
+		return
+	end
+	for _, constraint in ipairs(connection.noCollisionConstraints) do
+		constraint:Destroy()
+	end
+	connection.noCollisionConstraints = nil
+end
+
 local function forceDropConnection(connection)
 	if not connection then
 		return
 	end
 
+	destroyCollisionFilters(connection)
 	destroySetup(connection.setupA)
 	destroySetup(connection.setupB)
 
@@ -259,6 +270,38 @@ local function chooseHands(charA, charB)
 	return best.handA, best.handB
 end
 
+local function createCollisionFilters(charA, charB)
+	local partsA = {}
+	local partsB = {}
+
+	-- Include accessory handles as well as body parts. Otherwise hats, tools,
+	-- or layered clothing can still wedge between the two characters and apply
+	-- the upward impulse that causes head-riding.
+	for _, instance in ipairs(charA:GetDescendants()) do
+		if instance:IsA("BasePart") then
+			table.insert(partsA, instance)
+		end
+	end
+	for _, instance in ipairs(charB:GetDescendants()) do
+		if instance:IsA("BasePart") then
+			table.insert(partsB, instance)
+		end
+	end
+
+	local filters = {}
+	for _, partA in ipairs(partsA) do
+		for _, partB in ipairs(partsB) do
+			local filter = Instance.new("NoCollisionConstraint")
+			filter.Name = "HandHolding_NoCharacterCollision"
+			filter.Part0 = partA
+			filter.Part1 = partB
+			filter.Parent = partA
+			table.insert(filters, filter)
+		end
+	end
+	return filters
+end
+
 local function dropFadingConnectionForPlayer(player)
 	local connection = connectionByPlayer[player]
 	if connection and connection.ending then
@@ -324,6 +367,7 @@ local function establishConnection(a, b)
 		weightA = 0,
 		weightB = 0,
 		ending = false,
+		noCollisionConstraints = createCollisionFilters(charA, charB),
 	}
 
 	connections[connection] = true

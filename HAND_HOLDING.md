@@ -128,7 +128,10 @@ On a mutual offer the server:
    `B.LeftHand`/`B.RightHand`.
 4. Creates an attachment on each selected hand and joins them with a
    server-side `BallSocketConstraint`.
-5. For each side it creates an `IKControl`:
+5. Creates temporary `NoCollisionConstraint` instances for every BasePart pair
+   in the two characters, including accessory handles, so the players cannot
+   push each other upward or ride on one another's heads.
+6. For each side it creates an `IKControl`:
 
    ```lua
    ik.Type = Enum.IKControlType.Position
@@ -141,12 +144,12 @@ On a mutual offer the server:
    ik.Parent     = character:FindFirstChildOfClass("Humanoid")
    ```
 
-5. Attachment targets are parented to each `HumanoidRootPart` and updated
+7. Attachment targets are parented to each `HumanoidRootPart` and updated
    every frame to the **midpoint between the two selected hands**.
-6. IK weight blends from `0` to `1` over `IK_FADE_TIME`.
-7. When either player releases `L`, the connection is marked `ending`, the
+8. IK weight blends from `0` to `1` over `IK_FADE_TIME`.
+9. When either player releases `L`, the connection is marked `ending`, the
    logical state is cleared immediately, and the weight blends back to `0`
-   before the IK controls are destroyed.
+   before the IK controls and collision filters are destroyed.
 
 ---
 
