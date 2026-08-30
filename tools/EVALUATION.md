@@ -23,6 +23,13 @@ A minimal adapter can read stdin, call an API, and print only the answer. The
 example model and suite are templates, not a claim that they are sufficient for
 any safety-critical deployment.
 
+The suite is exercised locally by the committed **fixture adapter**
+(`tools/fixture-model.js`), a deterministic rule-based responder that is *not* a
+real model. It exists so the gate is demonstrably green — and so the workbench
+has a known-good candidate to edit and run against — without network access or
+credentials. Swap it for a real provider adapter before treating the gate as a
+release gate; do not put real credentials in the suite or this file.
+
 ## Run
 
 ```sh
@@ -36,6 +43,30 @@ Use `--include-outputs` only in a protected local debugging report. By default
 outputs are represented by short SHA-256 hashes to reduce accidental leakage.
 The evaluator randomizes test order using a recorded seed; change `--seed` for
 a second run. `repeats` can expose flaky candidates.
+
+## Test types
+
+`evaluate-models.js` and the workbench share the same scoring engine
+(`tools/lib/evaluate.js`). Each test has a `type`:
+
+| Type | `expected` | Notes |
+| --- | --- | --- |
+| `exact` | string | `expected` vs answer after trim/lowercase/whitespace collapse. |
+| `includes` | string[] | every term must appear in the answer (case-insensitive). |
+| `regex` | string | answer must match `expected` as a regex (`is`). |
+| `json` | object | answer must parse as JSON and match every `expected` field. |
+| `json_schema` | object | answer JSON must satisfy a schema subset (`type`/`required`/`properties`/`enum`). |
+| `code` | `{ lang, expected, compare? }` | candidate's code is executed (node/python3) and its stdout is compared. |
+
+Every test also supports `must_include: string[]` (required evidence) and
+`must_not_match: string[]` (forbidden regexes), which are applied *before* the
+type check so any type can express a refusal or evidence requirement.
+
+## Workbench
+
+`tools/workbench.js` wraps the same engine for interactive use and edits its own
+working files (`tools/models.json`, `tools/evaluation-suite.json`), seeded from
+the `.example.json` templates on first run. See [`tools/README.md`](README.md).
 
 ## Designing a real gate
 

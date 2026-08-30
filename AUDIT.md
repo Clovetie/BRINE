@@ -19,8 +19,8 @@
   public function is actually consumed inside this repo, or is library-only.
 - Ran the evaluation gate:
   `node tools/evaluate-models.js --models tools/models.example.json --suite tools/evaluation-suite.example.json`
-  → `candidate-local: REJECT 0.0%` (expected: the example adapter
-  `my_model_adapter.py` does not exist; this is a fail-closed, by-design result).
+  → `fixture-known-good: ADMIT 100.0%` (deterministic fixture adapter) and
+  `candidate-local: REJECT 0.0%` (missing adapter exercises the fail-closed path).
 
 ---
 
@@ -363,9 +363,12 @@ this, the ship floats on a constant −1 and the ocean is uncolored/unrendered.
 - **`evaluate-models.js`** is a legitimately fail-closed LLM gate: it hashes
   outputs by default (`--include-outputs` is opt-in/for-protected-debug), randomizes
   order with a seed, supports repeats, hard-fail categories, and never accepts the
-  production prompt. Matches HELM/NIST-style pre-deployment guidance. The only
-  note: `models.example.json` points at a non-existent `my_model_adapter.py`, so
-  it rejects by design — that's correct fail-closed behavior, not a defect.
+  production prompt. Matches HELM/NIST-style pre-deployment guidance. The example
+  now ships a deterministic fixture adapter (`tools/fixture-model.js`) so the gate
+  is demonstrably green (`ADMIT 100%`), alongside a knowingly-broken
+  `candidate-local` to exercise the fail-closed `REJECT` path. The interactive
+  workbench (`tools/workbench.js`) and shared engine (`tools/lib/evaluate.js`)
+  build on the same scorer.
 - **Raycast/octree safety:** guard against `nil` vertex ids (B-9) before
   `EM:GetPosition`.
 - **Collision groups:** ship uses `Ship`/`ShipIsland`; hand-holding uses
@@ -410,6 +413,7 @@ All 8 Luau file(s) parsed successfully.
 
 ```
 $ node tools/evaluate-models.js --models tools/models.example.json --suite tools/evaluation-suite.example.json
+fixture-known-good: ADMIT 100.0%
 candidate-local: REJECT 0.0%
 Report: evaluation-report.json
 ```
@@ -429,7 +433,8 @@ them with `bash tools/audit.sh` (or `--json` for machine-readable reports under
 | `tools/find-dead-config.js` | The never-read knobs (`WORKER_COUNT`, `FrustumRenderDistance`, `MaxChunkRenderDistance`, `FRUSTUM_CULLING_FIX`). |
 | `tools/hot-loop-scan.js` | **B-8** (`GetServerTimeNow` inside the HeightLookup PRECISE loop), `GetAllNodes` full scans, raycasts, per-frame work. |
 | `tools/check-syntax.js` (existing) | Structural sanity for the conservatively-typed scripts. |
-| `tools/evaluate-models.js` (existing) | Fail-closed model preflight gate. |
+| `tools/evaluate-models.js` (existing) | Fail-closed model preflight gate (now demonstrably green via `tools/fixture-model.js`). |
+| `tools/workbench.js` + `tools/lib/evaluate.js` (new) | Interactive model-eval workbench + shared scoring engine (exact/includes/regex/json/json_schema/code). |
 
 These tools are heuristic, Luau-aware custom parsers (not a compiler); treat
 their output as high-signal pointers that corroborate this audit's manual
