@@ -13,8 +13,14 @@ packages/
 .tools/
 tools/node_modules/
 
+# Generated analysis reports
+tools/reports/
+
 # Editors
 .vscode/
 .idea/
 *.swp
 .DS_Store
+
+# Tool evaluation report (generated)
+evaluation-report.json

@@ -3,7 +3,14 @@
 	"private": true,
 	"description": "Local tooling for checking BRINE Luau scripts.",
 	"scripts": {
-		"check": "node check-syntax.js"
+		"check": "node check-syntax.js",
+		"audit": "bash audit.sh",
+		"audit:json": "bash audit.sh --json",
+		"call-graph": "node call-graph.js",
+		"metrics": "node metrics.js",
+		"validate-project": "node validate-project.js",
+		"dead-config": "node find-dead-config.js",
+		"hot-loop": "node hot-loop-scan.js"
 	},
 	"dependencies": {
 		"luaparse": "0.3.1"
