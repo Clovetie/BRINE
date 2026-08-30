@@ -6,6 +6,16 @@
 			"$className": "ReplicatedStorage",
 			"$path": "src/ReplicatedStorage"
 		},
+		"Workspace": {
+			"$className": "Workspace",
+			"singletons": {
+				"$className": "Folder",
+				"Ship": {
+					"$className": "Model",
+					"$path": "src/Workspace/singletons/Ship"
+				}
+			}
+		},
 		"ServerScriptService": {
 			"$className": "ServerScriptService",
 			"HandHoldingServer": {

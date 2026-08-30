@@ -1,7 +1,7 @@
 --!nonstrict
 -- Hand-Holding Client
 -- The client only:
---   1. Tracks whether the local player is holding L.
+--   1. Toggles hand-holding on/off with L (L is not a hold key).
 --   2. Picks an intended target using facing direction + distance.
 --   3. Tells the server ("PressL", target) / ("ReleaseL").
 --
@@ -20,8 +20,8 @@ local MAX_LOOK_ANGLE_DEGREES = config.MAX_LOOK_ANGLE_DEGREES
 
 local localPlayer = Players.LocalPlayer
 
--- True while the player is physically holding L. Prevents duplicate press
--- events from keyboard repeat.
+-- This is a toggle state, not the physical keyboard state. The server will
+-- keep the joint active until L is pressed again or validation fails.
 local holdingL = false
 
 local function getBestTarget()
@@ -73,32 +73,26 @@ local function getBestTarget()
 end
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then
+	if gameProcessed or input.KeyCode ~= Enum.KeyCode.L then
 		return
 	end
 
-	if input.KeyCode == Enum.KeyCode.L and not holdingL then
-		holdingL = true
-		local target = getBestTarget()
-		remoteEvent:FireServer("PressL", target)
-	end
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-	if input.KeyCode == Enum.KeyCode.L and holdingL then
-		holdingL = false
+	-- Toggle: one press starts/offers or accepts; the next press releases.
+	-- InputEnded is intentionally not used, so the player does not have to
+	-- physically hold the key down.
+	holdingL = not holdingL
+	if holdingL then
+		remoteEvent:FireServer("PressL", getBestTarget())
+	else
 		remoteEvent:FireServer("ReleaseL")
 	end
 end)
 
--- If the keyboard loses focus, treat L as released so the server never keeps
--- a stale offer/connection open because InputEnded was missed.
-local function resetHoldIfKeyNotDown()
-	if not UserInputService:IsKeyDown(Enum.KeyCode.L) and holdingL then
+-- If the character disappears while toggled on, clear the local state. The
+-- server also cleans up the authoritative connection on CharacterRemoving.
+localPlayer.CharacterRemoving:Connect(function()
+	if holdingL then
 		holdingL = false
 		remoteEvent:FireServer("ReleaseL")
 	end
-end
-
-UserInputService.WindowFocused:Connect(resetHoldIfKeyNotDown)
-UserInputService.WindowLostFocus:Connect(resetHoldIfKeyNotDown)
+end)

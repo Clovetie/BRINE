@@ -23,6 +23,31 @@ local OFFER_TIMEOUT = config.OFFER_TIMEOUT
 local IK_FADE_TIME = config.IK_FADE_TIME
 local IK_SMOOTH_TIME = config.IK_SMOOTH_TIME
 local VALIDATION_INTERVAL = config.VALIDATION_INTERVAL
+local REST_DISTANCE = config.REST_DISTANCE
+local SPRING_STRENGTH = config.SPRING_STRENGTH
+local PULL_DAMPING = config.PULL_DAMPING
+local MAX_PULL_FORCE = config.MAX_PULL_FORCE
+
+local function assignCharacterCollisionGroup(character: Model)
+	local function assign(instance: Instance)
+		if instance:IsA("BasePart") then
+			instance.CollisionGroup = "Characters"
+		end
+	end
+	for _, instance in ipairs(character:GetDescendants()) do
+		assign(instance)
+	end
+	character.DescendantAdded:Connect(assign)
+end
+
+-- Characters must not collide with one another while tethered. This also
+-- prevents the physics solver from turning a close pair into a head-riding
+-- stack. World collisions remain unchanged.
+local PhysicsService = game:GetService("PhysicsService")
+pcall(function()
+	PhysicsService:RegisterCollisionGroup("Characters")
+end)
+PhysicsService:CollisionGroupSetCollidable("Characters", "Characters", false)
 
 -- State:
 --   Idle      -> no offer, no connection
@@ -149,6 +174,14 @@ local function destroySetup(setup)
 	if not setup then
 		return
 	end
+	if setup.pullForce then
+		setup.pullForce:Destroy()
+		setup.pullForce = nil
+	end
+	if setup.pullAttachment then
+		setup.pullAttachment:Destroy()
+		setup.pullAttachment = nil
+	end
 	if setup.ik then
 		setup.ik:Destroy()
 		setup.ik = nil
@@ -187,6 +220,21 @@ local function createIkSetup(character, side)
 		return nil
 	end
 
+	-- This attachment is only the application point for the soft pull. It does
+	-- not connect the two character assemblies, so each player keeps ownership
+	-- and independent walking control.
+	local pullAttachment = Instance.new("Attachment")
+	pullAttachment.Name = "HandHolding_" .. side .. "PullAttachment"
+	pullAttachment.Parent = rootPart
+
+	local pullForce = Instance.new("VectorForce")
+	pullForce.Name = "HandHolding_SoftPull"
+	pullForce.Attachment0 = pullAttachment
+	pullForce.ApplyAtCenterOfMass = true
+	pullForce.RelativeTo = Enum.ActuatorRelativeTo.World
+	pullForce.Force = Vector3.zero
+	pullForce.Parent = rootPart
+
 	local target = Instance.new("Attachment")
 	target.Name = "HandHolding_" .. side .. "Target"
 	target.Parent = rootPart
@@ -208,6 +256,8 @@ local function createIkSetup(character, side)
 		ik = ik,
 		target = target,
 		hand = hand,
+		pullForce = pullForce,
+		pullAttachment = pullAttachment,
 		upperArm = upperArm,
 		root = rootPart,
 	}
@@ -284,6 +334,8 @@ local function establishConnection(a, b)
 		return false
 	end
 
+	-- IK poses the arms; the pull force below is deliberately not a joint.
+
 	setupA.ik.Enabled = true
 	setupB.ik.Enabled = true
 
@@ -313,8 +365,11 @@ local function endConnection(connection)
 	if not connection or connection.ending then
 		return
 	end
-	-- The logical connection ends immediately; IK fades out gracefully.
+	-- The logical connection ends immediately; IK fades out gracefully. Stop
+	-- the pull at once so releasing never leaves a residual force behind.
 	connection.ending = true
+	connection.setupA.pullForce.Force = Vector3.zero
+	connection.setupB.pullForce.Force = Vector3.zero
 end
 
 ----------------------------------------------------------------------------
@@ -397,6 +452,8 @@ RunService.Heartbeat:Connect(function(dt)
 
 	for _, connection in ipairs(snapshot) do
 		if connection.ending then
+			connection.setupA.pullForce.Force = Vector3.zero
+			connection.setupB.pullForce.Force = Vector3.zero
 			-- Fade out and destroy once both sides are fully off.
 			connection.weightA = math.max(0, connection.weightA - dt / IK_FADE_TIME)
 			connection.weightB = math.max(0, connection.weightB - dt / IK_FADE_TIME)
@@ -427,6 +484,30 @@ RunService.Heartbeat:Connect(function(dt)
 
 					connection.setupA.target.Position = connection.setupA.root.CFrame:Inverse() * midpoint
 					connection.setupB.target.Position = connection.setupB.root.CFrame:Inverse() * midpoint
+
+					-- Soft, horizontal spring: the players keep separate character
+					-- assemblies and therefore keep separate network ownership. Pull
+					-- begins only after REST_DISTANCE, with equal/opposite forces.
+					local offset = connection.setupB.root.Position - connection.setupA.root.Position
+					local horizontalOffset = Vector3.new(offset.X, 0, offset.Z)
+					local distance = horizontalOffset.Magnitude
+					local pullA = Vector3.zero
+					local pullB = Vector3.zero
+					if distance > REST_DISTANCE then
+						local direction = horizontalOffset.Unit
+						local relativeSpeed = (connection.setupB.root.AssemblyLinearVelocity
+							- connection.setupA.root.AssemblyLinearVelocity):Dot(direction)
+						local stretch = distance - REST_DISTANCE
+						local magnitude = math.clamp(
+							stretch * SPRING_STRENGTH - relativeSpeed * PULL_DAMPING,
+							0,
+							MAX_PULL_FORCE
+						)
+						pullA = direction * magnitude
+						pullB = -pullA
+					end
+					connection.setupA.pullForce.Force = pullA
+					connection.setupB.pullForce.Force = pullB
 
 					connection.weightA = math.min(1, connection.weightA + dt / IK_FADE_TIME)
 					connection.weightB = math.min(1, connection.weightB + dt / IK_FADE_TIME)
@@ -486,6 +567,10 @@ end
 Players.PlayerRemoving:Connect(cleanupPlayer)
 
 for _, player in ipairs(Players:GetPlayers()) do
+	if player.Character then
+		assignCharacterCollisionGroup(player.Character)
+	end
+	player.CharacterAdded:Connect(assignCharacterCollisionGroup)
 	player.CharacterRemoving:Connect(function()
 		cleanupPlayer(player)
 	end)
@@ -495,6 +580,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(assignCharacterCollisionGroup)
 	player.CharacterRemoving:Connect(function()
 		cleanupPlayer(player)
 	end)

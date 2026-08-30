@@ -17,6 +17,16 @@ This installs into `.tools/`:
 - `luau` / `luau-analyze` — Luau compiler + analyzer
 - `luaparse` (npm, under `tools/node_modules`) — lightweight syntax parse
 
+## Model preflight evaluation
+
+The provider-neutral `evaluate-models.js` gate screens candidate model adapters
+before the application prompt is released. See [`EVALUATION.md`](EVALUATION.md)
+and the example [`evaluation-suite.example.json`](evaluation-suite.example.json).
+
+```bash
+node tools/evaluate-models.js --models tools/models.example.json --suite tools/evaluation-suite.example.json
+```
+
 ## Checks
 
 ```bash

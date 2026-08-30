@@ -1,0 +1,7 @@
+[
+  {
+    "id": "candidate-local",
+    "command": "python3",
+    "args": ["my_model_adapter.py"]
+  }
+]
