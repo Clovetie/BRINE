@@ -26,6 +26,13 @@ const path = require("path");
 const luaparse = require("luaparse");
 
 const root = path.resolve(__dirname, "..", "src");
+// Scope note: luaparse understands Lua 5.1, not Luau-only syntax (generics,
+// `{}?` optional types, `if-then` expressions, interpolated strings, long
+// comments). BRINE's deep Gerstner/Octree files use those, so this checker is
+// intentionally scoped to the conservatively-typed scripts it was built for.
+// For whole-repo analysis use tools/call-graph.js, metrics.js, validate-project.js
+// and hot-loop-scan.js (all Luau-aware custom parsers). Pass explicit paths to
+// check specific files instead.
 const DEFAULT_ROOTS = [
 	path.join(root, "ReplicatedStorage", "HandHolding"),
 	path.join(root, "ReplicatedStorage", "IslandGeneration"),
