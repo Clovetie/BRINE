@@ -7,5 +7,9 @@
 	},
 	"dependencies": {
 		"luaparse": "0.3.1"
+	},
+	"devDependencies": {
+		"@johnnymorganz/stylua-bin": "^2.5.2",
+		"fengari": "^0.1.5"
 	}
 }

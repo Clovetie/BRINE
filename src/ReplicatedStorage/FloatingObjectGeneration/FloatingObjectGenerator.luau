@@ -1,0 +1,1910 @@
+--!nonstrict
+--!optimize 2
+
+--[[
+	FloatingObjectGenerator
+	=======================
+	Server-side streamer for PREMADE, UNANCHORED floating structures/objects.
+	Mirrors IslandGenerator: templates are authored as complete Models (or
+	single BaseParts) inside ServerStorage.FloatingObjects, discovered
+	recursively, and classified by the SIZE TAG on each template:
+
+		"Small" | "Medium" | "Large" | "Debris"      (CollectionService tags)
+
+	Dynamic streaming model ("cache what nobody is looking at"):
+		* A deterministic cell record set is created once per world cell, then
+		  cached for the server lifetime. Cells are pure data - no instances.
+		* A record only becomes a real clone while a player can see it:
+		  within its class SimDistance, or inside a player's camera view cone
+		  (clients report camera position/look through the CameraReport
+		  RemoteEvent; stale/missing reports fall back to distance-only).
+		* Physics LOD:
+		    - Buoyant: near a player. Unanchored, server-owned assembly driven
+		      by AlignPosition/AlignOrientation toward the Gerstner wave
+		      surface (BoatManager.CalculateBuoyancy / HeightLookup), exactly
+		      like the ship singleton but on the server.
+		    - Frozen: visible but far. Anchored in place, constraints
+		      disabled - zero physics and zero replication cost.
+		    - Cached: unseen (or out of range) - the clone is destroyed and
+		      only the lightweight record survives. Re-rendering from a
+		      record is deterministic and cheap.
+		* HARD CAP: at most Config.Streaming.MaxRenderedObjects (500) rendered
+		  unanchored objects at once. When the cap is full, objects with NO
+		  player nearby are cached first, then the OLDEST rendered objects.
+
+	Placement safety ("never spawns beached/inside things"): a candidate is
+	accepted only if it is
+		(a) far enough from every other cached floating record (octree),
+		(b) outside every island footprint known to ZoneManager's island
+		    octree (rendered islands), and
+		(c) overlapping no non-ocean BaseParts (boats, docks, baseplate...)
+		    via Workspace:GetPartBoundsInRadius. The island generator treats
+		    rendered floating objects as obstacles too, so rising islands
+		    retry instead of surfacing underneath flotsam.
+
+	References (official docs):
+		CollectionService     https://create.roblox.com/docs/reference/engine/classes/CollectionService
+		ServerStorage         https://create.roblox.com/docs/reference/engine/classes/ServerStorage
+		Instance              https://create.roblox.com/docs/reference/engine/classes/Instance
+		Model / PVInstance    https://create.roblox.com/docs/studio/pivot-tools
+		AlignPosition         https://create.roblox.com/docs/reference/engine/classes/AlignPosition
+		AlignOrientation      https://create.roblox.com/docs/reference/engine/classes/AlignOrientation
+		WeldConstraint        https://create.roblox.com/docs/reference/engine/classes/WeldConstraint
+		Network ownership     https://create.roblox.com/docs/physics/network-ownership
+		Task scheduler        https://create.roblox.com/docs/scripting/scheduler
+		WorldRoot bounds      https://create.roblox.com/docs/reference/engine/classes/WorldRoot
+		OverlapParams         https://create.roblox.com/docs/reference/engine/datatypes/OverlapParams
+		RemoteEvent           https://create.roblox.com/docs/reference/engine/classes/RemoteEvent
+]]
+
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local ServerStorage = game:GetService("ServerStorage")
+local Workspace = game:GetService("Workspace")
+
+local Config = require(script.Parent.FloatingObjectConfig)
+local OctreeModule = require(ReplicatedStorage:WaitForChild("Octree"))
+local BoatManager = require(ReplicatedStorage.Gerstner.Serial.BoatManager)
+local HeightLookup = require(ReplicatedStorage.Gerstner.HeightLookup)
+local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
+
+local PLANE_Y = Config.PlaneOffset
+local CONTAINER_FOLDER_NAME = "_FloatingObjects"
+local ISLAND_TREE = ZoneManager.ISLAND_TREE
+
+-- Decorrelated from the island generator's cell hash (different multipliers
+-- and salt) so floating objects do not line up with island cells.
+local HASH_MOD = 2147483647
+local HASH_X = 83492791
+local HASH_Z = 51719333
+local SEED_SALT = 5700427
+
+-- Cull scoring bonus: any Frozen far object always beats a Buoyant far one
+-- (removing a frozen object interrupts no simulation).
+local FROZEN_CULL_BONUS = 1e9
+
+local FloatingObjectGenerator = {}
+
+-- Forward declarations: defined later, but earlier lifecycle functions
+-- (applyBuoyancyTarget, spawnRecord) reference them through these locals.
+local cacheObjectRecord
+local enforceRenderedLimit
+
+-- Octree of every cached floating record footprint (spacing checks).
+local recordOctree = OctreeModule.new()
+
+-- cellCache[key] = { key, cx, cz, records = { record, ... }, lastTouched }
+-- or { empty = true, at, lastTouched } marker. nil = not evaluated yet.
+local cellCache = {}
+local blockedCellRetryAt = {}
+
+-- Rendered/runtime state.
+local activeRecords = {} -- [record] = true while its clone is in Workspace
+local buoyantRecords = {} -- [record] = true while simulating buoyancy
+local recordsByModel = {} -- [Model] = record
+local renderedCount = 0
+
+-- Records created by PlaceOne() (not owned by any cell).
+local placedRecords = {}
+
+-- Per-player camera interest, fed by FloatingObjectGenerator.SetCameraState.
+local cameraStates = {} -- [Player] = { pos: Vector3, look: Vector3, at: number }
+
+-- Catalog / loop state.
+local catalog = nil
+local seededFromWorkspace = false
+local streamingLoopRunning = false
+local generationToken = 0
+local cachedWorldSeed = nil
+local buoyancyConnection: RBXScriptConnection? = nil
+local lastTrimAt = 0
+
+-- Lightweight diagnostics counters (exposed through GetStats).
+local diagnostics = {
+	ActivationAttempts = 0,
+	SpawnAttempts = 0,
+	SpawnedTotal = 0,
+	BlockedSpot = 0,
+	CloneFailed = 0,
+	CapDeferred = 0,
+	CachedTotal = 0,
+}
+
+-- OverlapParams for the obstacle broadphase. Ocean, our own container
+-- folder, and player characters are excluded. workspace.Map (islands) and
+-- _RisingIslands are deliberately KEPT as blockers so nothing generates
+-- inside an island that is up or surfacing.
+local obstacleParams = OverlapParams.new()
+obstacleParams.FilterType = Enum.RaycastFilterType.Exclude
+obstacleParams.RespectCanCollide = false
+obstacleParams.MaxParts = 8
+obstacleParams.FilterDescendantsInstances = {}
+
+-- Config helpers ---------------------------------------------------------------
+
+local function classConfig(className: string)
+	local settings = Config.Classes[className]
+	if type(settings) ~= "table" then
+		settings = {}
+	end
+	local defaults = Config.DefaultClassSettings or {}
+	return {
+		Weight = settings.Weight or defaults.Weight or Config.DEFAULT_WEIGHT,
+		PerCellMin = settings.PerCellMin or defaults.PerCellMin or 1,
+		PerCellMax = math.max(settings.PerCellMax or defaults.PerCellMax or 1, 1),
+		ClusterRadius = settings.ClusterRadius or defaults.ClusterRadius or 12,
+		MinSpacing = settings.MinSpacing or defaults.MinSpacing or 10,
+		SimDistance = settings.SimDistance or defaults.SimDistance or 200,
+		FloatRatio = settings.FloatRatio or defaults.FloatRatio or 0.5,
+	}
+end
+
+local function getStreamingConfig()
+	return Config.Streaming or {}
+end
+
+local function getBuoyancyConfig()
+	return Config.Buoyancy or {}
+end
+
+local function getDespawnConfig()
+	return Config.Despawn or {}
+end
+
+local function isBuoyancyEnabled(): boolean
+	local buoyancyConfig = Config.Buoyancy
+	return buoyancyConfig == nil or buoyancyConfig.Enabled ~= false
+end
+
+local function getViewConeCos(): number
+	local streamingConfig = getStreamingConfig()
+	local angleDeg = streamingConfig.CameraViewConeAngleDeg or 55
+	if angleDeg <= 0 or angleDeg >= 90 then
+		return -1 -- everything counts as "in view"
+	end
+	return math.cos(math.rad(angleDeg))
+end
+
+local function getNow(): number
+	return Workspace:GetServerTimeNow()
+end
+
+-- Small helpers ----------------------------------------------------------------
+
+local function weightedPickIndex(weights: { number }, totalWeight: number, rng: Random): number
+	local roll = rng:NextNumber(0, totalWeight)
+	local cursor = 0
+	for i, weight in weights do
+		cursor += weight
+		if roll <= cursor then
+			return i
+		end
+	end
+	return #weights
+end
+
+-- Weighted pick over entries shaped { ..., weight = number }. Falls back to a
+-- uniform pick when every weight is <= 0 so generation never breaks.
+local function weightedPickEntry(entries: { any }, rng: Random): any
+	if #entries == 0 then
+		return nil
+	end
+	local total = 0
+	local weights = table.create(#entries)
+	for i, entry in entries do
+		local weight = entry.weight or Config.DEFAULT_WEIGHT
+		if weight <= 0 then
+			weight = 0
+		end
+		weights[i] = weight
+		total += weight
+	end
+	if total <= 0 then
+		return entries[rng:NextInteger(1, #entries)]
+	end
+	return entries[weightedPickIndex(weights, total, rng)]
+end
+
+local function getOrCreateFolder(parent: Instance, folderName: string): Folder
+	local folder = parent:FindFirstChild(folderName)
+	if folder and folder:IsA("Folder") then
+		return folder
+	end
+
+	local newFolder = Instance.new("Folder")
+	newFolder.Name = folderName
+	newFolder.Parent = parent
+	return newFolder
+end
+
+local function ensureContainerFolder(): Folder
+	return getOrCreateFolder(Workspace, CONTAINER_FOLDER_NAME)
+end
+
+-- Reads the world seed from the SAME IntValue the ocean and island generator
+-- use (ReplicatedStorage.Gerstner.Settings.Seed). Settings reseeds a zero
+-- value once and persists it, so by require time it is stable. The fixed
+-- fallback keeps us deterministic if the IntValue is missing.
+local function getWorldSeed(): number
+	if cachedWorldSeed ~= nil then
+		return cachedWorldSeed
+	end
+
+	local seedValue = 7919
+	local ok, seedInstance = pcall(function()
+		return ReplicatedStorage.Gerstner.Settings:FindFirstChild("Seed")
+	end)
+	if ok and seedInstance and seedInstance:IsA("IntValue") and seedInstance.Value ~= 0 then
+		seedValue = seedInstance.Value
+	end
+	cachedWorldSeed = seedValue
+	return seedValue
+end
+
+local function cellKey(cx: number, cz: number): string
+	return tostring(cx) .. ":" .. tostring(cz)
+end
+
+local function getCellSeed(cx: number, cz: number): number
+	local seed = (getWorldSeed() + SEED_SALT + cx * HASH_X + cz * HASH_Z) % HASH_MOD
+	if seed < 0 then
+		seed += HASH_MOD
+	end
+	return math.floor(seed)
+end
+
+local function refreshObstacleFilters()
+	local exclude = {}
+
+	local ocean = Workspace:FindFirstChild("Ocean")
+	if ocean then
+		table.insert(exclude, ocean)
+	end
+
+	local container = Workspace:FindFirstChild(CONTAINER_FOLDER_NAME)
+	if container then
+		table.insert(exclude, container)
+	end
+
+	for _, player in Players:GetPlayers() do
+		if player.Character then
+			table.insert(exclude, player.Character)
+		end
+	end
+
+	obstacleParams.FilterDescendantsInstances = exclude
+end
+
+local function hasBlockingObstacle(centerPos: Vector3, radius: number): boolean
+	refreshObstacleFilters()
+	local parts =
+		Workspace:GetPartBoundsInRadius(centerPos, radius + (Config.Placement.ObstaclePadding or 2), obstacleParams)
+	return #parts > 0
+end
+
+-- Player proximity -------------------------------------------------------------
+
+local function getPlayerRoot(player: Player): BasePart?
+	local character = player.Character
+	if not character then
+		return nil
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.Health <= 0 then
+		return nil
+	end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		return root
+	end
+	return nil
+end
+
+local function distanceSqToNearestPlayer(centerPos: Vector3): number
+	local best = math.huge
+	for _, player in Players:GetPlayers() do
+		local root = getPlayerRoot(player)
+		if root then
+			local dx = root.Position.X - centerPos.X
+			local dz = root.Position.Z - centerPos.Z
+			local distSq = dx * dx + dz * dz
+			if distSq < best then
+				best = distSq
+			end
+		end
+	end
+	return best
+end
+
+local function getRecordWorldPos(record): Vector3
+	if record.hull and record.hull.Parent then
+		return record.hull.Position
+	end
+	return record.centerPos
+end
+
+-- Camera interest ---------------------------------------------------------------
+
+-- True when at least one client reported a camera recently. When no camera
+-- data exists the system degrades to distance-only interest (everything
+-- within CacheDistance stays rendered, nothing extra is cached for being
+-- "unseen"), which keeps the generator usable without the client script.
+local function hasFreshCamera(now: number): boolean
+	local timeout = getStreamingConfig().CameraDataTimeout or 3
+	for _, state in cameraStates do
+		if now - state.at <= timeout then
+			return true
+		end
+	end
+	return false
+end
+
+local function isSeenByAnyCamera(pos: Vector3, now: number): boolean
+	local streamingConfig = getStreamingConfig()
+	local timeout = streamingConfig.CameraDataTimeout or 3
+	local maxDistance = streamingConfig.CameraMaxDistance or 800
+	local viewCos = getViewConeCos()
+
+	for _, state in cameraStates do
+		if now - state.at <= timeout then
+			local offset = pos - state.pos
+			local dist = offset.Magnitude
+			if dist <= maxDistance then
+				if dist < 8 then
+					return true -- effectively on top of the camera
+				end
+				if state.look:Dot(offset / dist) >= viewCos then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+-- Catalog / discovery ----------------------------------------------------------
+
+-- Returns the class name for a template instance by reading its size tags in
+-- Config.ClassTags priority order. nil = untagged (skipped with a warning).
+local function classifyTemplate(instance: Instance): string?
+	for _, mapping in Config.ClassTags do
+		if CollectionService:HasTag(instance, mapping.Tag) then
+			return mapping.Class
+		end
+	end
+	return nil
+end
+
+-- Collects template candidates under `folder`, recursing through nested
+-- folders of any depth. Like the island generator, we do NOT descend into
+-- Models: a model's children are object components (a mast, a crate stack),
+-- not separate templates.
+local function collectTemplates(folder: Instance, out)
+	for _, child in folder:GetChildren() do
+		if child:IsA("Model") or child:IsA("BasePart") then
+			table.insert(out, child)
+		elseif child:IsA("Folder") then
+			collectTemplates(child, out)
+		end
+	end
+end
+
+local function templateExtentXZ(instance: Instance): number
+	if instance:IsA("BasePart") then
+		local size = instance.Size
+		return math.max(size.X, size.Z)
+	elseif instance:IsA("Model") then
+		local extents = instance:GetExtentsSize()
+		return math.max(extents.X, extents.Z)
+	end
+	return 0
+end
+
+-- Builds the class catalog from ServerStorage.<TemplatesRoot>.
+--   * Every tagged Model/BasePart under the root (any folder depth) joins the
+--     pool of its tag's class.
+--   * A template's optional "Weight" attribute overrides its rarity weight.
+--   * Untagged / part-less templates are skipped and warned about ONCE.
+local function buildCatalog()
+	local root = ServerStorage:FindFirstChild(Config.TemplatesRoot)
+	catalog = {}
+	if not root then
+		return catalog
+	end
+
+	local candidates = {}
+	collectTemplates(root, candidates)
+
+	local skipped = {}
+	for _, instance in candidates do
+		local className = classifyTemplate(instance)
+		if not className then
+			table.insert(skipped, instance:GetFullName())
+			continue
+		end
+
+		if instance:IsA("Model") and not instance:FindFirstChildWhichIsA("BasePart", true) then
+			table.insert(skipped, instance:GetFullName() .. " (no BasePart)")
+			continue
+		end
+
+		local weight = Config.DEFAULT_WEIGHT
+		local attributeWeight = instance:GetAttribute("Weight")
+		if typeof(attributeWeight) == "number" and attributeWeight > 0 then
+			weight = attributeWeight
+		end
+
+		local entry = catalog[className]
+		if not entry then
+			entry = {
+				name = className,
+				weight = classConfig(className).Weight,
+				templates = {},
+			}
+			catalog[className] = entry
+		end
+		table.insert(entry.templates, {
+			instance = instance,
+			weight = weight,
+			extentXZ = templateExtentXZ(instance),
+		})
+	end
+
+	if #skipped > 0 then
+		warn(
+			"[FloatingObjectGenerator] skipped "
+				.. #skipped
+				.. " untagged/empty template(s) under ServerStorage."
+				.. Config.TemplatesRoot
+				.. " (expected tags: "
+				.. table.concat(
+					(function()
+						local names = {}
+						for _, mapping in Config.ClassTags do
+							table.insert(names, mapping.Tag)
+						end
+						return names
+					end)(),
+					", "
+				)
+				.. "): "
+				.. table.concat(skipped, ", ")
+		)
+	end
+
+	return catalog
+end
+
+-- Returns the usable class entries. If the last discovery attempt found
+-- nothing (missing root, templates not yet added), retries on a short
+-- throttle so a late-created ServerStorage folder starts working without a
+-- restart while empty-root scans stay cheap.
+local lastCatalogAttemptAt = -math.huge
+local function getCatalogList(): { any }
+	local function flatten()
+		local list = {}
+		if catalog ~= nil then
+			for _, entry in catalog do
+				if entry.weight > 0 and #entry.templates > 0 then
+					table.insert(list, entry)
+				end
+			end
+		end
+		return list
+	end
+
+	local list = flatten()
+	if #list > 0 then
+		return list
+	end
+
+	local now = getNow()
+	if now - lastCatalogAttemptAt > 2 then
+		lastCatalogAttemptAt = now
+		buildCatalog()
+		list = flatten()
+	end
+	return list
+end
+
+-- Placement validation ---------------------------------------------------------
+
+-- True if `centerPos` is a safe spot for a floating object with footprint
+-- `spacingRadius`. Checks (a) other cached floating records, (b) island
+-- footprints known to ZoneManager, and optionally (c) workspace obstacles.
+-- Pass `ignoredRecord` when re-validating a record whose own footprint node
+-- is already in the octree (e.g. at spawn time).
+local function isSpotClear(
+	centerPos: Vector3,
+	spacingRadius: number,
+	checkObstacles: boolean?,
+	ignoredRecord: any?
+): boolean
+	local pl = Config.Placement
+
+	-- (a) Floating record spacing via our octree.
+	local searchRadius = spacingRadius + (pl.MaxSpacingRadius or 48)
+	for _, node in recordOctree:SearchRadius(centerPos, searchRadius) do
+		local object = node.Object or {}
+		if object.record ~= ignoredRecord then
+			local otherSpacing = object.spacingRadius or 10
+			if (node.Position - centerPos).Magnitude < spacingRadius + otherSpacing then
+				return false
+			end
+		end
+	end
+
+	-- (b) Island footprints via ZoneManager's island octree. Nodes are
+	-- { Island = Model, Radius = number } at the island Center position.
+	local islandSearch = spacingRadius + (pl.IslandAvoidPadding or 24) + (pl.MaxIslandRadius or 400)
+	for _, node in ISLAND_TREE:SearchRadius(centerPos, islandSearch) do
+		local object = node.Object or {}
+		local islandRadius = object.Radius or 0
+		if (node.Position - centerPos).Magnitude < spacingRadius + islandRadius + (pl.IslandAvoidPadding or 24) then
+			return false
+		end
+	end
+
+	-- (c) Obstacles via broadphase sphere query.
+	if checkObstacles ~= false and hasBlockingObstacle(centerPos, spacingRadius) then
+		return false
+	end
+
+	return true
+end
+
+-- Buoyancy helpers ---------------------------------------------------------------
+
+-- Heading (radians about Y) of a hull's current facing, flattened to XZ.
+local function currentYaw(hull: BasePart): number
+	local look = hull.CFrame.LookVector
+	local x, z = look.X, look.Z
+	if x * x + z * z < 0.0025 then
+		return 0 -- looking straight up/down; keep the last upright frame
+	end
+	return math.atan2(-x, -z)
+end
+
+-- Re-reads ZoneManager wave multipliers for an object (islands/whirlpools
+-- damp waves). Mirrors the ship singleton's client update logic, but at a
+-- low per-object cadence because GetZoneParameters walks the zone octrees.
+local function refreshZone(record, now: number)
+	local sim = record.sim
+	local hull = record.hull
+	if not sim or not hull or not hull.Parent then
+		return
+	end
+
+	local zone = ZoneManager:GetZoneParameters(hull.Position)
+	if zone and zone.Type ~= "Whirlpool" then
+		if zone.Link then
+			sim.zone.PhaseMultiplier, sim.zone.SpeedMultiplier, sim.zone.AmplitudeMultiplier =
+				ZoneManager:GetZoneMultipliers(hull.Position, zone.Link.Position, zone)
+		elseif zone.Island then
+			local center = zone.Island:FindFirstChild("Center")
+			if center and center:IsA("BasePart") then
+				sim.zone.PhaseMultiplier, sim.zone.SpeedMultiplier, sim.zone.AmplitudeMultiplier =
+					ZoneManager:GetIslandMultipliers(hull.Position, center.Position, (zone.Radius or 0) / 2)
+			end
+		end
+		sim.zone.CURRENT_ZONE = zone
+	else
+		sim.zone.PhaseMultiplier = 1
+		sim.zone.SpeedMultiplier = 1
+		sim.zone.AmplitudeMultiplier = 1
+		sim.zone.CURRENT_ZONE = zone
+	end
+	sim.nextZoneAt = now + (getBuoyancyConfig().ZoneRefreshInterval or 3)
+end
+
+-- Refreshes one buoyant object's AlignPosition/AlignOrientation targets.
+-- Called on a staggered clock (Buoyancy.UpdateInterval per object, budgeted
+-- per frame) - the constraints interpolate between refreshes.
+local function applyBuoyancyTarget(record, now: number)
+	local sim = record.sim
+	local hull = record.hull
+	if not sim or not hull or not hull.Parent then
+		return
+	end
+
+	-- Physics escape hatch: an object squeezed far below the water plane is
+	-- gone for good; reclaim its render slot.
+	if hull.Position.Y < PLANE_Y - (getBuoyancyConfig().KillDepth or 160) then
+		cacheObjectRecord(record, "Lost", true)
+		return
+	end
+
+	if now >= (sim.nextZoneAt or 0) then
+		refreshZone(record, now)
+	end
+
+	local zone = sim.zone
+	local lookupMethod = getBuoyancyConfig().LookupMethod or "FAST"
+
+	local heightVector, orientation, depth
+	if sim.points then
+		heightVector, orientation, depth = BoatManager.CalculateBuoyancy(
+			hull.CenterOfMass,
+			sim.mover.WorldPosition,
+			sim.points,
+			sim.length,
+			sim.width,
+			sim.heightParam,
+			zone
+		)
+	else
+		-- Cheap single-point bob for small objects: 1 lookup instead of 4.
+		local height = HeightLookup.Lookup(
+			hull.Position,
+			lookupMethod,
+			false,
+			zone.SpeedMultiplier,
+			zone.PhaseMultiplier,
+			zone.AmplitudeMultiplier,
+			zone.CURRENT_ZONE
+		)
+		if height <= -0.9 then
+			-- Lookup failed (e.g. PRECISE found no triangle); keep the last
+			-- target and retry shortly instead of disabling the sim.
+			sim.nextUpdateAt = now + 0.25
+			return
+		end
+		heightVector = Vector3.new(0, height + sim.heightParam, 0)
+		orientation = CFrame.fromEulerAnglesXYZ(0, 0, 0)
+		depth = 0
+	end
+
+	if heightVector ~= Vector3.zero then
+		sim.alignPosition.Enabled = true
+		sim.alignPosition.MaxForce = sim.maxForceBase * (1 + depth / 10)
+		-- OneAttachment mode targets a WORLD position, so keep the hull's
+		-- current X/Z and only drive Y - otherwise every object would be
+		-- dragged toward the world origin.
+		sim.alignPosition.Position = Vector3.new(hull.Position.X, heightVector.Y, hull.Position.Z)
+	else
+		-- CalculateBuoyancy says the object is fully out of the water
+		-- (airborne); let gravity act until it splashes back in.
+		sim.alignPosition.Enabled = false
+	end
+
+	-- Compose the wave pitch/roll with the hull's CURRENT heading so players
+	-- can still nudge objects around without the sim snapping their yaw.
+	sim.alignOrientation.CFrame = CFrame.fromEulerAnglesXYZ(0, currentYaw(hull), 0) * orientation
+	sim.nextUpdateAt = now + (getBuoyancyConfig().UpdateInterval or 0.12)
+end
+
+-- Record/model lifecycle ---------------------------------------------------------
+
+local function markRendered(record)
+	if record.rendered then
+		return
+	end
+	record.rendered = true
+	renderedCount += 1
+	activeRecords[record] = true
+end
+
+local function unmarkRendered(record)
+	if not record.rendered then
+		return
+	end
+	record.rendered = false
+	renderedCount = math.max(0, renderedCount - 1)
+	activeRecords[record] = nil
+	if buoyantRecords[record] then
+		buoyantRecords[record] = nil
+	end
+end
+
+local function setOwnership(record)
+	local parts = record.parts
+	if not parts then
+		return
+	end
+	for _, part in parts do
+		if part.Parent and part:IsA("BasePart") then
+			local ok = pcall(function()
+				return part:CanSetNetworkOwnership()
+			end)
+			if ok and part:CanSetNetworkOwnership() then
+				part:SetNetworkOwner(nil) -- server owns the physics
+			end
+		end
+	end
+end
+
+-- Anchors/unanchors the whole assembly and toggles its constraints.
+-- Frozen = zero physics cost and no replication (a static anchored prop).
+local function setObjectFrozen(record, frozen: boolean)
+	local model = record.model
+	local parts = record.parts
+	if not model or not parts then
+		return
+	end
+
+	local sim = record.sim
+	if sim then
+		sim.alignPosition.Enabled = not frozen and isBuoyancyEnabled()
+		sim.alignOrientation.Enabled = not frozen and isBuoyancyEnabled()
+	end
+
+	for _, part in parts do
+		if part.Parent then
+			part.Anchored = frozen
+		end
+	end
+
+	record.state = frozen and "Frozen" or "Buoyant"
+	model:SetAttribute("FloatingState", record.state)
+
+	if not frozen then
+		local hull = record.hull
+		if hull and hull.Parent then
+			hull.AssemblyLinearVelocity = Vector3.zero
+			hull.AssemblyAngularVelocity = Vector3.zero
+		end
+		setOwnership(record)
+		if sim then
+			sim.nextUpdateAt = 0 -- refresh targets immediately
+			buoyantRecords[record] = true
+		end
+	elseif sim then
+		buoyantRecords[record] = nil
+	end
+end
+
+local function disconnectRecordSignals(record)
+	local connection = record.destroyingConnection
+	if connection then
+		record.destroyingConnection = nil
+		connection:Disconnect()
+	end
+end
+
+-- Destroys the clone and returns the record to the lightweight cache, or
+-- permanently despawns it (`permanent`, e.g. lifetime expiry / physics loss).
+function cacheObjectRecord(record, reason: string, permanent: boolean?)
+	disconnectRecordSignals(record)
+
+	local model = record.model
+	if model then
+		recordsByModel[model] = nil
+		if model.Parent then
+			model:Destroy()
+		end
+	end
+
+	record.model = nil
+	record.hull = nil
+	record.parts = nil
+	record.sim = nil
+	record.unseenSince = nil
+	record.activatedAt = nil
+	record.expiresAt = nil
+	unmarkRendered(record)
+
+	if permanent then
+		record.state = "Despawned"
+		record.dead = true
+		record.despawnedAt = getNow()
+		if record.node then
+			recordOctree:RemoveNode(record.node)
+			record.node = nil
+		end
+	else
+		record.state = "Cached"
+		record.cacheReason = reason
+		local cooldown
+		if reason == "RenderLimit" then
+			cooldown = getDespawnConfig().CullCooldown or 30
+		else
+			cooldown = getStreamingConfig().RespawnCooldown or 1.5
+		end
+		record.respawnCooldownUntil = getNow() + cooldown
+	end
+end
+
+-- Finds the biggest BasePart (by volume) to use as the physics hull, unless
+-- the template set a PrimaryPart.
+local function pickHull(model: Model): BasePart?
+	if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then
+		return model.PrimaryPart
+	end
+
+	local best: BasePart? = nil
+	local bestVolume = -1
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			local size = descendant.Size
+			local volume = size.X * size.Y * size.Z
+			if volume > bestVolume then
+				bestVolume = volume
+				best = descendant
+			end
+		end
+	end
+	return best
+end
+
+-- Clones + prepares the assembly for a record. Returns the model, or nil if
+-- the template became unusable.
+local function buildClone(record): Model?
+	local template = record.template
+	if not template or not template.Parent then
+		return nil
+	end
+
+	local clone: Model
+	if template:IsA("Model") then
+		local model = template:Clone() :: Model
+		if not model:FindFirstChildWhichIsA("BasePart", true) then
+			return nil
+		end
+		clone = model
+	else
+		local wrapped = Instance.new("Model")
+		wrapped.Name = template.Name
+		local part = template:Clone()
+		part.Parent = wrapped
+		wrapped.PrimaryPart = part :: BasePart
+		clone = wrapped
+	end
+
+	local hull = pickHull(clone)
+	if not hull then
+		clone:Destroy()
+		return nil
+	end
+	clone.PrimaryPart = hull
+	hull.RootPriority = 100 -- keep the hull as the assembly root
+
+	-- Unanchor everything: these are UNANCHORED floating objects. Anchored
+	-- parts inside an assembly would freeze the whole thing.
+	local parts = {}
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = false
+			table.insert(parts, descendant)
+		end
+	end
+
+	-- Weld every part to the hull so the object rides as ONE assembly even
+	-- when the author did not add welds. Extra WeldConstraints alongside
+	-- author welds are harmless.
+	if #parts > 1 then
+		for _, part in parts do
+			if part ~= hull then
+				local weld = Instance.new("WeldConstraint")
+				weld.Name = "FloatingAssemblyWeld"
+				weld.Part0 = hull
+				weld.Part1 = part
+				weld.Parent = hull
+			end
+		end
+	end
+
+	-- Remove constraints that would fight the buoyancy sim, plus any legacy
+	-- (deprecated) BodyMovers left in the authored asset.
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("AlignPosition") or descendant:IsA("AlignOrientation") or descendant:IsA("BodyMover") then
+			descendant:Destroy()
+		end
+	end
+
+	return clone
+end
+
+-- Builds the buoyancy rig (mover attachment + constraints + sample points)
+-- once the clone is parented and physics properties are readable.
+local function buildSim(record)
+	local model = record.model
+	local hull = record.hull
+	if not model or not hull then
+		return
+	end
+
+	local buoyancyConfig = getBuoyancyConfig()
+	local bboxCFrame, bboxSize = model:GetBoundingBox()
+	local halfWidth = bboxSize.X / 2
+	local halfLength = bboxSize.Z / 2
+	local extentXZ = math.max(bboxSize.X, bboxSize.Z)
+
+	-- Fraction of the object's height riding ABOVE the waterline.
+	local floatRatio = record.floatRatio or 0.5
+	local heightParam = bboxSize.Y * (floatRatio - 0.5)
+
+	local mover = Instance.new("Attachment")
+	mover.Name = "FloatingMover"
+	mover.CFrame = hull.CFrame:ToObjectSpace(bboxCFrame)
+	mover.Parent = hull
+
+	local mass = math.max(hull.AssemblyMass, 0.1)
+	local maxForceBase = mass * Workspace.Gravity * (buoyancyConfig.ForceMultiplier or 5)
+
+	local alignPosition = Instance.new("AlignPosition")
+	alignPosition.Name = "FloatingBuoyancy"
+	alignPosition.Mode = Enum.PositionAlignmentMode.OneAttachment
+	alignPosition.Attachment0 = mover
+	alignPosition.ApplyAtCenterOfMass = true
+	alignPosition.MaxForce = maxForceBase
+	alignPosition.MaxVelocity = buoyancyConfig.MaxVelocity or 25
+	alignPosition.Responsiveness = buoyancyConfig.Responsiveness or 14
+	alignPosition.RigidityEnabled = false
+	alignPosition.Enabled = false
+	alignPosition.Parent = hull
+
+	local alignOrientation = Instance.new("AlignOrientation")
+	alignOrientation.Name = "FloatingWaveOrientation"
+	alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	alignOrientation.Attachment0 = mover
+	alignOrientation.MaxTorque = mass * (buoyancyConfig.TorqueMultiplier or 5000)
+	alignOrientation.MaxAngularVelocity = buoyancyConfig.MaxAngularVelocity or 6
+	alignOrientation.Responsiveness = buoyancyConfig.AngularResponsiveness or 10
+	alignOrientation.RigidityEnabled = false
+	alignOrientation.Enabled = false
+	alignOrientation.Parent = hull
+
+	-- 4-point sampling only pays off on objects large enough to pitch/roll;
+	-- small ones use the cheap single-point bob in applyBuoyancyTarget.
+	local points = nil
+	if extentXZ > (buoyancyConfig.SmallObjectExtent or 6) then
+		local inset = 0.9
+		local function cornerAttachment(name: string, sx: number, sz: number): Attachment
+			local attachment = Instance.new("Attachment")
+			attachment.Name = name
+			local corner = bboxCFrame * CFrame.new(sx * halfWidth * inset, 0, sz * halfLength * inset)
+			attachment.CFrame = hull.CFrame:ToObjectSpace(corner)
+			attachment.Parent = hull
+			return attachment
+		end
+		points = {
+			cornerAttachment("FloatTopLeft", -1, -1), -- front-left
+			cornerAttachment("FloatTopRight", 1, -1), -- front-right
+			cornerAttachment("FloatBottomLeft", -1, 1), -- back-left
+			cornerAttachment("FloatBottomRight", 1, 1), -- back-right
+		}
+	end
+
+	record.sim = {
+		mover = mover,
+		alignPosition = alignPosition,
+		alignOrientation = alignOrientation,
+		points = points,
+		length = bboxSize.Z,
+		width = bboxSize.X,
+		heightParam = heightParam,
+		maxForceBase = maxForceBase,
+		nextUpdateAt = 0,
+		nextZoneAt = 0,
+		zone = {
+			SpeedMultiplier = 1,
+			PhaseMultiplier = 1,
+			AmplitudeMultiplier = 1,
+			CURRENT_ZONE = nil,
+		},
+	}
+end
+
+-- Spawns (renders) a cached record: clones the template, welds/unanchors the
+-- assembly, parents it under workspace._FloatingObjects, takes server
+-- network ownership, and starts it in Buoyant or Frozen state.
+local function spawnRecord(record, wantFrozen: boolean?): Model?
+	if record.dead or record.rendered then
+		return record.model
+	end
+
+	local streamingConfig = getStreamingConfig()
+	local now = getNow()
+	if record.respawnCooldownUntil and now < record.respawnCooldownUntil then
+		return nil
+	end
+	if record.blockedUntil and now < record.blockedUntil then
+		return nil
+	end
+	diagnostics.SpawnAttempts += 1
+
+	local maxRendered = streamingConfig.MaxRenderedObjects or 500
+	if renderedCount >= maxRendered then
+		enforceRenderedLimit(1)
+		if renderedCount >= maxRendered then
+			diagnostics.CapDeferred += 1
+			return nil
+		end
+	end
+
+	-- Re-validate the spot: boats/docks may have drifted over it, and an
+	-- island may have risen nearby since the record was cached. The record's
+	-- own octree node is ignored so it does not block itself.
+	local spacingRadius = record.spacingRadius or 10
+	if not isSpotClear(record.centerPos, spacingRadius, true, record) then
+		diagnostics.BlockedSpot += 1
+		record.blockedUntil = now + (streamingConfig.ObstacleRetryDelay or 25)
+		return nil
+	end
+
+	local model = buildClone(record)
+	if not model then
+		diagnostics.CloneFailed += 1
+		record.dead = true
+		if record.node then
+			recordOctree:RemoveNode(record.node)
+			record.node = nil
+		end
+		return nil
+	end
+
+	-- Seat the bounding-box center at its float height, with the record yaw.
+	local _, bboxSize = model:GetBoundingBox()
+	local pivotY = PLANE_Y + bboxSize.Y * ((record.floatRatio or 0.5) - 0.5)
+	local pivot = CFrame.new(record.centerPos.X, pivotY, record.centerPos.Z) * CFrame.Angles(0, record.yaw, 0)
+	model:PivotTo(pivot)
+
+	record.model = model
+	record.hull = model.PrimaryPart
+	record.parts = {}
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			table.insert(record.parts, descendant)
+		end
+	end
+
+	model:SetAttribute("FloatingClass", record.className)
+	model:SetAttribute("FloatingCell", record.cellKey or "AdHoc")
+	model:SetAttribute("GeneratedFloat", true)
+	if not CollectionService:HasTag(model, Config.ObjectTag) then
+		CollectionService:AddTag(model, Config.ObjectTag)
+	end
+	model.Parent = ensureContainerFolder()
+
+	setOwnership(record)
+	buildSim(record)
+
+	recordsByModel[model] = record
+	record.destroyingConnection = model.Destroying:Connect(function()
+		-- External removal (admin tool, Studio): return to cache gracefully.
+		if recordsByModel[model] == record then
+			record.model = nil
+			record.hull = nil
+			record.parts = nil
+			record.sim = nil
+			disconnectRecordSignals(record)
+			unmarkRendered(record)
+			record.state = "Cached"
+		end
+	end)
+
+	record.activatedAt = now
+	record.expiresAt = now + (record.lifetime or 0)
+	record.blockedUntil = nil
+	record.unseenSince = nil
+	markRendered(record)
+
+	if wantFrozen or not isBuoyancyEnabled() then
+		setObjectFrozen(record, true)
+	else
+		setObjectFrozen(record, false)
+	end
+	diagnostics.SpawnedTotal += 1
+
+	return model
+end
+
+-- Render-cap enforcement ---------------------------------------------------------
+
+-- Best record to cache when the render cap is full. Prefers objects with no
+-- player nearby (frozen ones first - removing them interrupts no
+-- simulation); falls back to the OLDEST rendered object.
+local function getCullCandidate()
+	local despawnConfig = getDespawnConfig()
+	local protectDistance = despawnConfig.CullNearPlayerDistance or 260
+	local now = getNow()
+
+	local bestFar = nil
+	local bestFarScore = -math.huge
+	local oldest = nil
+	local oldestAge = -math.huge
+
+	for record in activeRecords do
+		local pos = getRecordWorldPos(record)
+		local nearestSq = distanceSqToNearestPlayer(pos)
+		local age = now - (record.activatedAt or now)
+
+		if age > oldestAge then
+			oldestAge = age
+			oldest = record
+		end
+
+		local protectedRadius = (record.spacingRadius or 10) + protectDistance
+		if nearestSq > protectedRadius * protectedRadius then
+			local score = nearestSq
+			if record.state == "Frozen" then
+				score += FROZEN_CULL_BONUS
+			end
+			if score > bestFarScore then
+				bestFarScore = score
+				bestFar = record
+			end
+		end
+	end
+
+	return bestFar or oldest
+end
+
+function enforceRenderedLimit(reserveSlots: number?)
+	local maxRendered = getStreamingConfig().MaxRenderedObjects or 500
+	local target = math.max(0, maxRendered - (reserveSlots or 0))
+
+	while renderedCount > target do
+		local candidate = getCullCandidate()
+		if not candidate then
+			break
+		end
+		cacheObjectRecord(candidate, "RenderLimit", false)
+	end
+end
+
+FloatingObjectGenerator.enforceRenderedLimit = enforceRenderedLimit
+
+-- Record generation ------------------------------------------------------------
+
+local function makeObjectRecord(templateEntry, className: string, cfg, pos: Vector3, yaw: number, rng: Random)
+	local despawnConfig = getDespawnConfig()
+	local minLifetime = despawnConfig.MinLifetime or 30 * 60
+	local maxLifetime = despawnConfig.MaxLifetime or 45 * 60
+	if maxLifetime < minLifetime then
+		maxLifetime = minLifetime
+	end
+
+	local floatRatio = cfg.FloatRatio
+	local attributeRatio = templateEntry.instance:GetAttribute("FloatRatio")
+	if typeof(attributeRatio) == "number" then
+		floatRatio = math.clamp(attributeRatio, 0.05, 0.95)
+	end
+
+	local simDistance = cfg.SimDistance
+	local attributeDistance = templateEntry.instance:GetAttribute("SimDistance")
+	if typeof(attributeDistance) == "number" and attributeDistance > 0 then
+		simDistance = attributeDistance
+	end
+
+	local spacingRadius = math.max(cfg.MinSpacing, templateEntry.extentXZ * 0.6)
+	local seed = getCellSeed(math.floor(pos.X), math.floor(pos.Z)) + rng:NextInteger(0, 65535)
+
+	local record = {
+		key = nil,
+		cellKey = nil,
+		cx = nil,
+		cz = nil,
+		template = templateEntry.instance,
+		className = className,
+		centerPos = Vector3.new(pos.X, PLANE_Y, pos.Z),
+		yaw = yaw,
+		spacingRadius = spacingRadius,
+		floatRatio = floatRatio,
+		simDistance = simDistance,
+		state = "Cached",
+		createdAt = getNow(),
+		lastTouched = getNow(),
+		lifetime = Random.new(seed):NextNumber(minLifetime, maxLifetime),
+	}
+	return record
+end
+
+-- Deterministically evaluates one world cell: either a set of floating object
+-- records, an empty marker, or nil (retry later - a movable obstacle is
+-- currently blocking the spot).
+local function generateCellRecords(cx: number, cz: number)
+	local key = cellKey(cx, cz)
+	if cellCache[key] ~= nil then
+		return cellCache[key]
+	end
+
+	local now = getNow()
+	local retryAt = blockedCellRetryAt[key]
+	if retryAt and now < retryAt then
+		return nil
+	end
+
+	local catalogList = getCatalogList()
+	if #catalogList == 0 then
+		return nil
+	end
+
+	local streamingConfig = getStreamingConfig()
+	local pl = Config.Placement
+	local cell = pl.CellSize or 150
+	local rng = Random.new(getCellSeed(cx, cz))
+	local emptyMarker = nil
+
+	if rng:NextNumber() > (pl.ObjectChance or 0.65) then
+		emptyMarker = true
+	end
+
+	local baseX, baseZ = cx * cell, cz * cell
+	if not emptyMarker then
+		local jitter = pl.GridJitter or 0
+		baseX += rng:NextNumber(-cell * jitter, cell * jitter)
+		baseZ += rng:NextNumber(-cell * jitter, cell * jitter)
+		local distOrigin = math.sqrt(baseX * baseX + baseZ * baseZ)
+		if distOrigin < (pl.SpawnSafetyRadius or 140) then
+			emptyMarker = true
+		elseif pl.RespectWorldRadius and distOrigin > (pl.WorldRadius or 2600) then
+			emptyMarker = true
+		end
+	end
+
+	local records = {}
+	if not emptyMarker then
+		local entry = weightedPickEntry(catalogList, rng)
+		local cfg = classConfig(entry.name)
+		local count = rng:NextInteger(math.min(cfg.PerCellMin, cfg.PerCellMax), cfg.PerCellMax)
+
+		for _ = 1, count do
+			local templateEntry = weightedPickEntry(entry.templates, rng)
+			local accepted = false
+
+			for _ = 1, (pl.MaxPlacementAttempts or 6) do
+				local angle = rng:NextNumber(0, math.pi * 2)
+				local dist = math.sqrt(rng:NextNumber()) * (cfg.ClusterRadius or 12)
+				local x = baseX + math.cos(angle) * dist
+				local z = baseZ + math.sin(angle) * dist
+				local pos = Vector3.new(x, PLANE_Y, z)
+
+				-- Octree/island checks are cheap, so re-roll on failure. The
+				-- broadphase workspace query runs once, only when the spot is
+				-- otherwise clear.
+				if isSpotClear(pos, math.max(cfg.MinSpacing, templateEntry.extentXZ * 0.6), false) then
+					if hasBlockingObstacle(pos, math.max(cfg.MinSpacing, templateEntry.extentXZ * 0.6)) then
+						-- A movable obstacle (boat/dock) is parked here: retry
+						-- the whole cell later instead of burning it. Undo the
+						-- footprints reserved by this cell's earlier objects so
+						-- the retry starts clean.
+						for _, record in records do
+							if record.node then
+								recordOctree:RemoveNode(record.node)
+								record.node = nil
+							end
+						end
+						blockedCellRetryAt[key] = now + (streamingConfig.ObstacleRetryDelay or 25)
+						return nil
+					end
+
+					local record =
+						makeObjectRecord(templateEntry, entry.name, cfg, pos, rng:NextNumber(0, math.pi * 2), rng)
+					record.key = key .. "#" .. #records
+					record.cellKey = key
+					record.cx = cx
+					record.cz = cz
+					table.insert(records, record)
+					-- Reserve the footprint immediately so siblings in this
+					-- cell (and later cells) keep their distance.
+					record.node = recordOctree:CreateNode(Vector3.new(pos.X, PLANE_Y, pos.Z), {
+						spacingRadius = record.spacingRadius,
+						record = record,
+					})
+					accepted = true
+					break
+				end
+			end
+
+			if not accepted then
+				continue -- this object's spot was taken; skip it
+			end
+		end
+	end
+
+	if #records == 0 then
+		cellCache[key] = { empty = true, at = now, lastTouched = now }
+	else
+		cellCache[key] = { key = key, cx = cx, cz = cz, records = records, at = now, lastTouched = now }
+	end
+	blockedCellRetryAt[key] = nil
+	return cellCache[key]
+end
+
+-- Streaming loop -----------------------------------------------------------------
+
+local function forEachPlayerCell(radius: number, maxCells: number, callback)
+	local roots = {}
+	for _, player in Players:GetPlayers() do
+		local root = getPlayerRoot(player)
+		if root then
+			table.insert(roots, root)
+		end
+	end
+	if #roots == 0 then
+		return 0
+	end
+
+	local cell = Config.Placement.CellSize or 150
+	local radiusCells = math.ceil(radius / cell)
+	local radiusSq = radius * radius
+	local seen = {}
+	local processed = 0
+
+	for _, root in roots do
+		local rootX = root.Position.X
+		local rootZ = root.Position.Z
+		local centerCx = math.floor(rootX / cell + 0.5)
+		local centerCz = math.floor(rootZ / cell + 0.5)
+
+		for ring = 0, radiusCells do
+			for dx = -ring, ring do
+				for dz = -ring, ring do
+					if math.max(math.abs(dx), math.abs(dz)) ~= ring then
+						continue
+					end
+
+					local cx = centerCx + dx
+					local cz = centerCz + dz
+					local key = cellKey(cx, cz)
+					if seen[key] then
+						continue
+					end
+
+					local cellCenterX = cx * cell
+					local cellCenterZ = cz * cell
+					local distX = cellCenterX - rootX
+					local distZ = cellCenterZ - rootZ
+					if distX * distX + distZ * distZ > radiusSq then
+						continue
+					end
+
+					seen[key] = true
+					processed += 1
+					local shouldContinue = callback(cx, cz, key)
+					if shouldContinue == false or processed >= maxCells then
+						return processed
+					end
+				end
+			end
+		end
+	end
+
+	return processed
+end
+
+local function generateCellsAroundPlayers()
+	local streamingConfig = getStreamingConfig()
+	local maxCells = streamingConfig.MaxCellsPerCycle or 256
+	local cellsPerYield = streamingConfig.CellsPerYield or 48
+	local processed = 0
+
+	forEachPlayerCell(streamingConfig.GenerationRadius or 1700, maxCells, function(cx, cz, key)
+		if cellCache[key] == nil then
+			generateCellRecords(cx, cz)
+		end
+		local cellRecord = cellCache[key]
+		if cellRecord then
+			cellRecord.lastTouched = getNow()
+		end
+		processed += 1
+		if processed % cellsPerYield == 0 then
+			task.wait()
+		end
+	end)
+end
+
+local function recordHasInterest(record, now: number): (boolean, boolean)
+	-- Returns (hasInterest, wantFrozen). hasInterest=false means "cache it".
+	local streamingConfig = getStreamingConfig()
+	local cacheDistance = streamingConfig.CacheDistance or 650
+	local pos = getRecordWorldPos(record)
+	local nearestSq = distanceSqToNearestPlayer(pos)
+	local simDistance = record.simDistance or 200
+
+	if nearestSq > cacheDistance * cacheDistance then
+		return false, false
+	end
+	if nearestSq <= simDistance * simDistance then
+		record.unseenSince = nil
+		return true, false
+	end
+
+	-- Middle band: out of simulation range but possibly visible.
+	if not hasFreshCamera(now) then
+		record.unseenSince = nil
+		return true, true -- distance-only fallback: keep rendered, frozen
+	end
+	if isSeenByAnyCamera(pos, now) then
+		record.unseenSince = nil
+		return true, true
+	end
+
+	-- Unseen by every fresh camera: run the grace timer out, then cache.
+	-- (The timer lives on the record and must NOT be reset by callers while
+	-- the object is merely inside the grace window.)
+	if record.unseenSince == nil then
+		record.unseenSince = now
+	elseif now - record.unseenSince > (streamingConfig.OutOfViewGrace or 3) then
+		return false, false
+	end
+	return true, true
+end
+
+local function activateRecordsAroundPlayers()
+	local streamingConfig = getStreamingConfig()
+	local maxSpawns = streamingConfig.MaxSpawnsPerCycle or 24
+	local cell = Config.Placement.CellSize or 150
+	local activationRadius = (streamingConfig.CacheDistance or 650) + cell
+	local spawned = 0
+	local now = getNow()
+
+	forEachPlayerCell(activationRadius, streamingConfig.MaxActivationCellsPerCycle or 320, function(_, _, key)
+		if spawned >= maxSpawns then
+			return false
+		end
+
+		local cellRecord = cellCache[key]
+		if not cellRecord or cellRecord.empty then
+			return nil
+		end
+
+		for _, record in cellRecord.records do
+			if spawned >= maxSpawns then
+				break
+			end
+			if record.dead or record.rendered then
+				continue
+			end
+
+			local hasInterest, wantFrozen = recordHasInterest(record, now)
+			if hasInterest then
+				if spawnRecord(record, wantFrozen) then
+					spawned += 1
+				end
+			end
+		end
+		return nil
+	end)
+end
+
+local function updateActiveLOD()
+	local streamingConfig = getStreamingConfig()
+	local maxCaches = streamingConfig.MaxCachesPerCycle or 64
+	local cachedCount = 0
+	local now = getNow()
+
+	for record in activeRecords do
+		local hasInterest, wantFrozen = recordHasInterest(record, now)
+		if not hasInterest then
+			if cachedCount < maxCaches then
+				cachedCount += 1
+				cacheObjectRecord(record, "Unseen", false)
+			end
+		else
+			local shouldFreeze = wantFrozen or not isBuoyancyEnabled()
+			if shouldFreeze and record.state == "Buoyant" then
+				setObjectFrozen(record, true)
+			elseif not shouldFreeze and record.state == "Frozen" then
+				setObjectFrozen(record, false)
+			end
+		end
+	end
+end
+
+local function updateLifetimeDespawns()
+	local now = getNow()
+	local expired = {}
+	for record in activeRecords do
+		if record.expiresAt and now >= record.expiresAt then
+			table.insert(expired, record)
+		end
+	end
+	for _, record in expired do
+		cacheObjectRecord(record, "Lifetime", true)
+	end
+end
+
+-- Drops cache cells no player has touched for a long time. Records are
+-- deterministic, so a trimmed cell re-evaluates identically when a player
+-- returns - trimming is effectively free memory reclaim.
+local function trimIdleCells(now: number)
+	local streamingConfig = getStreamingConfig()
+	local interval = streamingConfig.CacheTrimInterval or 90
+	if now - lastTrimAt < interval then
+		return
+	end
+	lastTrimAt = now
+
+	local idleLifetime = streamingConfig.CellIdleLifetime or 600
+	local keepRadius = (streamingConfig.GenerationRadius or 1700) + (streamingConfig.CacheTrimMargin or 256)
+	local cell = Config.Placement.CellSize or 150
+	local keepRadiusSq = keepRadius * keepRadius
+
+	local trimKeys = nil
+	for key, cellRecord in cellCache do
+		if now - (cellRecord.lastTouched or cellRecord.at or now) <= idleLifetime then
+			continue
+		end
+		if cellRecord.empty then
+			trimKeys = trimKeys or {}
+			table.insert(trimKeys, key)
+			continue
+		end
+
+		local centerX = (cellRecord.cx or 0) * cell
+		local centerZ = (cellRecord.cz or 0) * cell
+
+		local nearPlayer = false
+		for _, player in Players:GetPlayers() do
+			local root = getPlayerRoot(player)
+			if root then
+				local dx = root.Position.X - centerX
+				local dz = root.Position.Z - centerZ
+				if dx * dx + dz * dz <= keepRadiusSq then
+					nearPlayer = true
+					break
+				end
+			end
+		end
+		if nearPlayer then
+			continue
+		end
+
+		local hasRendered = false
+		for _, record in cellRecord.records do
+			if record.rendered then
+				hasRendered = true
+				break
+			end
+		end
+		if hasRendered then
+			continue
+		end
+
+		for _, record in cellRecord.records do
+			record.dead = true
+			if record.node then
+				recordOctree:RemoveNode(record.node)
+				record.node = nil
+			end
+		end
+		trimKeys = trimKeys or {}
+		table.insert(trimKeys, key)
+	end
+
+	if trimKeys then
+		for _, key in trimKeys do
+			cellCache[key] = nil
+		end
+	end
+
+	for key, retryAt in blockedCellRetryAt do
+		if retryAt < now - idleLifetime then
+			blockedCellRetryAt[key] = nil
+		end
+	end
+end
+
+local function streamingStep()
+	local now = getNow()
+	generateCellsAroundPlayers()
+	activateRecordsAroundPlayers()
+	updateActiveLOD()
+	updateLifetimeDespawns()
+	FloatingObjectGenerator.enforceRenderedLimit(0)
+	trimIdleCells(now)
+end
+
+local function startStreamingLoop()
+	if streamingLoopRunning then
+		return
+	end
+
+	generationToken += 1
+	local token = generationToken
+	streamingLoopRunning = true
+
+	task.spawn(function()
+		local streamingConfig = getStreamingConfig()
+		print(
+			"[FloatingObjectGenerator] dynamic streaming started. Render cap: "
+				.. tostring(streamingConfig.MaxRenderedObjects or 500)
+		)
+
+		while generationToken == token do
+			local ok, err = pcall(streamingStep)
+			if not ok then
+				warn("[FloatingObjectGenerator] streaming step failed: " .. tostring(err))
+			end
+			task.wait(getStreamingConfig().GenerationInterval or 1.25)
+		end
+
+		if generationToken == token then
+			streamingLoopRunning = false
+		end
+	end)
+end
+
+-- Frame-budgeted buoyancy scheduler ------------------------------------------------
+
+-- Refreshes due buoyancy targets every frame with a hard per-frame budget.
+-- Objects carry staggered nextUpdateAt clocks, so a full 500-object scene
+-- spreads its wave lookups instead of spiking one frame.
+local function startBuoyancyLoop()
+	if buoyancyConnection then
+		return
+	end
+
+	buoyancyConnection = RunService.PostSimulation:Connect(function()
+		local now = getNow()
+		local budget = getBuoyancyConfig().MaxTargetUpdatesPerFrame or 60
+
+		for record in buoyantRecords do
+			local sim = record.sim
+			if sim and record.state == "Buoyant" and now >= (sim.nextUpdateAt or 0) then
+				if budget <= 0 then
+					break
+				end
+				budget -= 1
+				applyBuoyancyTarget(record, now)
+			end
+		end
+	end)
+end
+
+-- Workspace seeding -----------------------------------------------------------------
+
+-- Seeds the record octree with floating objects a user placed by hand (tagged
+-- Config.ObjectTag) so generated objects keep their distance from them.
+local function seedOctreeFromWorkspace()
+	for _, instance in CollectionService:GetTagged(Config.ObjectTag) do
+		if not instance:IsDescendantOf(Workspace) then
+			continue
+		end
+		local pos: Vector3
+		if instance:IsA("Model") then
+			pos = instance:GetPivot().Position
+		elseif instance:IsA("BasePart") then
+			pos = instance.Position
+		else
+			continue
+		end
+		recordOctree:CreateNode(Vector3.new(pos.X, PLANE_Y, pos.Z), {
+			spacingRadius = math.max(templateExtentXZ(instance) * 0.6, 10),
+			existing = true,
+		})
+	end
+	seededFromWorkspace = true
+end
+
+-- Public API -------------------------------------------------------------------------
+
+-- Rebuilds and returns the class catalog found under ServerStorage.
+function FloatingObjectGenerator.GetCatalog()
+	if catalog == nil then
+		buildCatalog()
+	end
+	local summary = {}
+	for className, entry in catalog do
+		summary[className] = {
+			weight = entry.weight,
+			templateCount = #entry.templates,
+		}
+	end
+	return summary
+end
+
+-- Starts dynamic streaming of floating objects around moving players.
+function FloatingObjectGenerator.Generate()
+	local catalogList = getCatalogList()
+	if #catalogList == 0 then
+		warn(
+			"[FloatingObjectGenerator] No tagged templates found under ServerStorage."
+				.. Config.TemplatesRoot
+				.. " (expected tags: Small, Medium, Large, Debris)."
+		)
+		return
+	end
+
+	ensureContainerFolder()
+	if not seededFromWorkspace then
+		seedOctreeFromWorkspace()
+	end
+
+	if isBuoyancyEnabled() then
+		startBuoyancyLoop()
+	end
+
+	if getStreamingConfig().Enabled ~= false then
+		startStreamingLoop()
+	end
+end
+
+-- Places a single floating object at `position` (debug/admin). `className`
+-- optionally picks the size class; otherwise a weighted class is chosen.
+-- Returns the spawned Model, or nil if the spot was blocked.
+function FloatingObjectGenerator.PlaceOne(position: Vector3, className: string?): Model?
+	local catalogList = getCatalogList()
+	if #catalogList == 0 then
+		return nil
+	end
+
+	local entry
+	if className then
+		for _, candidate in catalogList do
+			if candidate.name == className then
+				entry = candidate
+				break
+			end
+		end
+		if not entry then
+			warn("[FloatingObjectGenerator] unknown class '" .. tostring(className) .. "' for PlaceOne")
+			return nil
+		end
+	else
+		entry = catalogList[math.random(1, #catalogList)]
+	end
+
+	local rng = Random.new(getWorldSeed() + math.random(1, 100000))
+	local templateEntry = weightedPickEntry(entry.templates, rng)
+	local cfg = classConfig(entry.name)
+	local spacingRadius = math.max(cfg.MinSpacing, templateEntry.extentXZ * 0.6)
+	local pos = Vector3.new(position.X, PLANE_Y, position.Z)
+
+	if not isSpotClear(pos, spacingRadius, true) then
+		return nil
+	end
+
+	local record = makeObjectRecord(templateEntry, entry.name, cfg, pos, rng:NextNumber(0, math.pi * 2), rng)
+	record.node = recordOctree:CreateNode(Vector3.new(pos.X, PLANE_Y, pos.Z), {
+		spacingRadius = record.spacingRadius,
+		record = record,
+	})
+	table.insert(placedRecords, record)
+	return spawnRecord(record, false)
+end
+
+-- Camera interest feed. The server script forwards validated
+-- CameraReport RemoteEvent payloads here (client -> server).
+function FloatingObjectGenerator.SetCameraState(player: Player, cameraPos: Vector3, cameraLook: Vector3)
+	if typeof(cameraPos) ~= "Vector3" or typeof(cameraLook) ~= "Vector3" then
+		return
+	end
+
+	-- NaN components never equal themselves; reject poisoned vectors.
+	if
+		cameraPos.X ~= cameraPos.X
+		or cameraPos.Y ~= cameraPos.Y
+		or cameraPos.Z ~= cameraPos.Z
+		or cameraLook.X ~= cameraLook.X
+		or cameraLook.Y ~= cameraLook.Y
+		or cameraLook.Z ~= cameraLook.Z
+	then
+		return
+	end
+
+	local lookMagnitude = cameraLook.Magnitude
+	if lookMagnitude < 0.5 or lookMagnitude > 2 then
+		return -- clients must send a unit-ish look vector
+	end
+	if math.abs(cameraPos.X) > 1e5 or math.abs(cameraPos.Y) > 1e5 or math.abs(cameraPos.Z) > 1e5 then
+		return -- reject absurd positions (exploit hardening)
+	end
+
+	cameraStates[player] = {
+		pos = cameraPos,
+		look = cameraLook / lookMagnitude,
+		at = getNow(),
+	}
+end
+
+-- Clears camera interest for a leaving player. Wire to Players.PlayerRemoving.
+function FloatingObjectGenerator.RemovePlayer(player: Player)
+	cameraStates[player] = nil
+end
+
+function FloatingObjectGenerator.GetStats()
+	local cachedCells = 0
+	local cachedRecords = 0
+	local buoyant = 0
+	local frozen = 0
+	local now = getNow()
+	local timeout = getStreamingConfig().CameraDataTimeout or 3
+	local freshCameras = 0
+	for _, state in cameraStates do
+		if now - state.at <= timeout then
+			freshCameras += 1
+		end
+	end
+	for _, cellRecord in cellCache do
+		if not cellRecord.empty then
+			cachedCells += 1
+			for _, record in cellRecord.records do
+				if not record.dead then
+					cachedRecords += 1
+					if record.state == "Buoyant" then
+						buoyant += 1
+					elseif record.state == "Frozen" then
+						frozen += 1
+					end
+				end
+			end
+		end
+	end
+	return {
+		CachedCells = cachedCells,
+		CachedRecords = cachedRecords,
+		RenderedObjects = renderedCount,
+		BuoyantObjects = buoyant,
+		FrozenObjects = frozen,
+		MaxRenderedObjects = getStreamingConfig().MaxRenderedObjects or 500,
+		Streaming = streamingLoopRunning,
+		FreshCameras = freshCameras,
+		Diagnostics = diagnostics,
+	}
+end
+
+-- Removes every floating object this generator rendered and resets all
+-- streaming/cache/octree state. Hand-placed tagged objects are untouched
+-- (only their octree seed nodes are cleared). Call Generate() to restart.
+function FloatingObjectGenerator.ClearGenerated()
+	generationToken += 1
+	streamingLoopRunning = false
+
+	if buoyancyConnection then
+		buoyancyConnection:Disconnect()
+		buoyancyConnection = nil
+	end
+
+	local toDestroy = {}
+	for record in activeRecords do
+		table.insert(toDestroy, record)
+	end
+	for _, record in toDestroy do
+		cacheObjectRecord(record, "Clear", false)
+	end
+	for _, record in placedRecords do
+		if record.model then
+			cacheObjectRecord(record, "Clear", true)
+		end
+	end
+
+	for _, cellRecord in cellCache do
+		if not cellRecord.empty then
+			for _, record in cellRecord.records do
+				record.dead = true
+			end
+		end
+	end
+
+	table.clear(cellCache)
+	table.clear(blockedCellRetryAt)
+	table.clear(activeRecords)
+	table.clear(buoyantRecords)
+	table.clear(recordsByModel)
+	table.clear(placedRecords)
+	renderedCount = 0
+
+	recordOctree:ClearAllNodes()
+	seededFromWorkspace = false
+	catalog = nil -- force re-discovery on next Generate
+	lastTrimAt = 0
+end
+
+return FloatingObjectGenerator
