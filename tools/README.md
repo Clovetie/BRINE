@@ -108,8 +108,33 @@ production prompt is never accepted here. See [`EVALUATION.md`](EVALUATION.md).
 node tools/evaluate-models.js --models tools/models.example.json --suite tools/evaluation-suite.example.json
 ```
 
-> The example adapter (`my_model_adapter.py`) doesn't exist, so the example
-> reports `REJECT 0.0%` — that is the correct, by-design fail-closed behavior.
+The committed example is **demonstrably green** now: it ships a deterministic,
+known-good fixture adapter (`tools/fixture-model.js`) so you can see an `ADMIT`
+end-to-end without network or credentials, alongside a deliberately-broken
+`candidate-local` model to show the fail-closed `REJECT` path:
+
+```text
+fixture-known-good: ADMIT 100.0%
+candidate-local:    REJECT   0.0%
+```
+
+### `workbench.js` — interactive evaluation workbench
+
+Interactive CLI on top of the same engine. Lets you list/add/remove candidate
+models and suite tests, run the suite against one or all models, inspect
+per-test pass/fail (+ raw output with `--include-outputs`), and write a full
+JSON report. It operates on *working* files (`tools/models.json` and
+`tools/evaluation-suite.json`), seeding them from the `.example.json` templates
+on first use.
+
+```bash
+node tools/workbench.js            # interactive REPL
+node tools/workbench.js run        # run the whole suite (all models)
+node tools/workbench.js run fixture-known-good --include-outputs
+node tools/workbench.js report /tmp/report.json
+node tools/workbench.js add-test '{"id":"r-9","category":"reasoning","type":"exact","prompt":"2+2?","expected":"4"}'
+node tools/workbench.js seed       # re-copy working files from the example templates
+```
 
 ---
 

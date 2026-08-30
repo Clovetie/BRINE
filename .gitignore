@@ -24,3 +24,7 @@ tools/reports/
 
 # Tool evaluation report (generated)
 evaluation-report.json
+
+# Workbench working files (seeded from the .example templates via `seed`)
+tools/models.json
+tools/evaluation-suite.json

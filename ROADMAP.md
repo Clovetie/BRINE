@@ -93,13 +93,14 @@ releases). See [`tools/README.md`](tools/README.md).
 | --- | --- | --- | --- | --- |
 | 6.1 | Make `setup-tools.sh` resilient to GitHub release-supplier flakiness (retry + alternate mirror) | M | Low | `stylua`/`selene`/`luau` install reliably in CI/dev. ✅ retried + Rokit tip added |
 | 6.2 | Add a `luau-analyze` / `selene` CI step (currently only `check-syntax.js` is runnable without the full toolchain) | M | Low | Static analysis gate in CI. ✅ `.github/workflows/ci.yml` |
-| 6.3 | Swap the example LLM adapter for a real fixture so the preflight gate is demonstrably green before use | S | Low | `evaluate-models.js` shows `ADMIT` on a known-good adapter. |
+| 6.3 | ✅ DONE — Swap the example LLM adapter for a real fixture so the preflight gate is demonstrably green before use | S | Low | `evaluate-models.js` shows `ADMIT` on a known-good adapter. The committed example ships `tools/fixture-model.js` (deterministic demo adapter) so the gate is green end-to-end, plus `candidate-local` to exercise the fail-closed `REJECT` path. |
 | 6.4 | ✅ DONE — `tools/call-graph.js` (dep graph + orphaned/public-API surface) | — | — | Machine-checks AUDIT §4. |
 | 6.5 | ✅ DONE — `tools/metrics.js` (LOC/complexity/heavy-construct trend) | — | — | Spots the largest/hottest files per iteration. |
 | 6.6 | ✅ DONE — `tools/validate-project.js` (Rojo layout + `.model.json` contract gate) | — | — | Fails CI on the `EditZone` type bug & layout mistakes. |
 | 6.7 | ✅ DONE — `tools/find-dead-config.js` (unused settings knobs) | — | — | Flags `WORKER_COUNT`/`FrustumRenderDistance`/`MaxChunkRenderDistance`/`FRUSTUM_CULLING_FIX`. |
 | 6.8 | ✅ DONE — `tools/hot-loop-scan.js` (per-frame/loop risk) | — | — | Flags `GetServerTimeNow` in HeightLookup loop, `GetAllNodes`, raycasts. |
 | 6.9 | ✅ DONE — `tools/audit.sh` orchestrator + `tools/lib/luau.js` shared engine | — | — | One command runs everything; JSON reports in `tools/reports/`. |
+| 6.10 | ✅ DONE — `tools/workbench.js` interactive evaluation workbench + `tools/lib/evaluate.js` shared scoring engine; expanded example suite | — | — | List/add/remove models & tests, run the suite with per-test pass/fail, write JSON reports, and a demonstrably-green example. |
 
 ---
 

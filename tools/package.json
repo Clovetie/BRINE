@@ -10,7 +10,9 @@
 		"metrics": "node metrics.js",
 		"validate-project": "node validate-project.js",
 		"dead-config": "node find-dead-config.js",
-		"hot-loop": "node hot-loop-scan.js"
+		"hot-loop": "node hot-loop-scan.js",
+		"evaluate": "node evaluate-models.js --models models.example.json --suite evaluation-suite.example.json",
+		"workbench": "node workbench.js"
 	},
 	"dependencies": {
 		"luaparse": "0.3.1"
