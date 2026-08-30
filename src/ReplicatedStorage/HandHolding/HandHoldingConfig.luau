@@ -23,10 +23,12 @@ return {
 	-- How often (seconds) the server re-validates offers and drops stale ones.
 	VALIDATION_INTERVAL = 0.5,
 
-	-- Soft tether tuning. Pull is horizontal only and starts after the rest
-	-- distance, so both players retain independent movement.
-	REST_DISTANCE = 3.5,
-	SPRING_STRENGTH = 700,
-	PULL_DAMPING = 110,
-	MAX_PULL_FORCE = 2500,
+	-- Soft tether tuning. Pull is horizontal and has virtually no slack, so the
+	-- players are continuously drawn toward each other while still retaining
+	-- independent movement. A tiny rest distance avoids unstable zero-length
+	-- direction vectors when they overlap exactly.
+	REST_DISTANCE = 0.1,
+	SPRING_STRENGTH = 1100,
+	PULL_DAMPING = 160,
+	MAX_PULL_FORCE = 4000,
 }
