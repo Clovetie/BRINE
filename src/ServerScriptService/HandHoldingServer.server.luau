@@ -149,6 +149,12 @@ local function destroySetup(setup)
 	if not setup then
 		return
 	end
+	-- The BallSocketConstraint is the real physical connection. IK is only
+	-- used to pose the arm toward it; never rely on IK alone for attachment.
+	if setup.socket then
+		setup.socket:Destroy()
+		setup.socket = nil
+	end
 	if setup.ik then
 		setup.ik:Destroy()
 		setup.ik = nil
@@ -156,6 +162,10 @@ local function destroySetup(setup)
 	if setup.target then
 		setup.target:Destroy()
 		setup.target = nil
+	end
+	if setup.handAttachment then
+		setup.handAttachment:Destroy()
+		setup.handAttachment = nil
 	end
 end
 
@@ -187,6 +197,13 @@ local function createIkSetup(character, side)
 		return nil
 	end
 
+	-- Put the physical joint on the hand itself. Attachments parented to the
+	-- HumanoidRootPart can make the arm look connected without connecting the
+	-- two player assemblies, which is why the old IK-only version was not pullable.
+	local handAttachment = Instance.new("Attachment")
+	handAttachment.Name = "HandHolding_" .. side .. "Attachment"
+	handAttachment.Parent = hand
+
 	local target = Instance.new("Attachment")
 	target.Name = "HandHolding_" .. side .. "Target"
 	target.Parent = rootPart
@@ -208,6 +225,7 @@ local function createIkSetup(character, side)
 		ik = ik,
 		target = target,
 		hand = hand,
+		handAttachment = handAttachment,
 		upperArm = upperArm,
 		root = rootPart,
 	}
@@ -283,6 +301,17 @@ local function establishConnection(a, b)
 		destroySetup(setupB)
 		return false
 	end
+
+	-- BallSocketConstraint joins the two character assemblies and allows both
+	-- players to pull one another. A ball socket is preferable to a weld here:
+	-- it preserves natural arm/shoulder rotation while still being a true joint.
+	local socket = Instance.new("BallSocketConstraint")
+	socket.Name = "HandHolding_PhysicalJoint"
+	socket.Attachment0 = setupA.handAttachment
+	socket.Attachment1 = setupB.handAttachment
+	socket.LimitsEnabled = false
+	socket.Parent = setupA.hand
+	setupA.socket = socket
 
 	setupA.ik.Enabled = true
 	setupB.ik.Enabled = true

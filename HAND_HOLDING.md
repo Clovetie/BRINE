@@ -2,11 +2,12 @@
 
 A simple, player-hosted hand-holding interaction for R15 characters.
 
-- Offerer **holds `L`** while facing a nearby player.
-- Target **also holds `L`** to accept.
-- When both are holding `L` and the server accepts the interaction, an
-  **IKControl** on each character bends the nearest pair of arms so the hands
-  reach the midpoint between them.
+- Player presses `L` once while facing a nearby player to offer/accept.
+- Player presses `L` again to release; `L` is a **toggle**, not a hold key.
+- When both players have toggled on and the server accepts the interaction, a
+  real server-created `BallSocketConstraint` joins the selected hand
+  attachments. Both character assemblies can therefore pull each other.
+- `IKControl` is used only to pose the arms toward the physical joint.
 - Releasing `L`, dying, respawning, leaving, or moving too far apart breaks the
   connection.
 
@@ -51,7 +52,7 @@ those paths.
 
 | Payload | Meaning |
 | --- | --- |
-| `("PressL", targetPlayer)` | The local player is now holding `L` and intends to interact with `targetPlayer`. |
+| `("PressL", targetPlayer)` | The local player toggled hand-holding on and intends to interact with `targetPlayer`. |
 | `("ReleaseL")` | The local player is no longer holding `L`. |
 
 The client may send `nil` as the target when nobody is nearby. The server
@@ -100,14 +101,14 @@ distance, character state, R15 rig, and busy status.
 
 ## How the two-player acceptance works
 
-1. Player A holds `L`. The client fires `("PressL", B)`.
+1. Player A presses `L` once. The client fires `("PressL", B)`.
 2. The server checks that both players are valid R15 characters in range and
    that neither is already holding hands. It stores `offers[A] = { target = B }`.
-3. Player B holds `L`. The client fires `("PressL", A)` (or whatever target
-   B picked).
-4. The server sees `offers[B]`? No—it sees that **A is already offering to B**.
-   That is the acceptance: B is holding `L` and chose A. The server
-   establishes the connection and clears both offers.
+3. Player B presses `L` once. The client fires `("PressL", A)` (or whatever
+   target B picked).
+4. The server sees that **A is already offering to B**. That is the
+   acceptance: B toggled on and chose A. The server establishes the physical
+   connection and clears both offers.
 5. If A is not already offering to B (e.g. only B offered), then B simply
    creates an offer, and A's later press completes it the same way.
 
@@ -125,7 +126,9 @@ On a mutual offer the server:
 2. Re-checks the distance between their `HumanoidRootPart`s.
 3. Picks the closest hand pair: `A.LeftHand`/`A.RightHand` vs
    `B.LeftHand`/`B.RightHand`.
-4. For each side it creates an `IKControl`:
+4. Creates an attachment on each selected hand and joins them with a
+   server-side `BallSocketConstraint`.
+5. For each side it creates an `IKControl`:
 
    ```lua
    ik.Type = Enum.IKControlType.Position
@@ -187,7 +190,7 @@ trusted.
 | 15. Missing IK/target parts | `createIkSetup` returns `nil` if any R15 chain part is missing; establishment fails safely. |
 | 16. Non-R15 | `isValidR15Character` rejects anything that is not a valid R15 character. |
 | 17. Animation vs IK | The IK control owns the chain between the upper arm and hand. Its `Weight` is faded in/out and `Enabled` is managed by the server to avoid fighting the default animation. |
-| 18. Players turn/move while holding | No teleport, no weld, no physics constraints. The target attachments follow the midpoint each frame, so IK can compensate as players move or turn. |
+| 18. Players turn/move while holding | The hand attachments are joined by a server-side `BallSocketConstraint`, so the players remain physically connected and can pull each other. The target attachments follow the midpoint each frame, so IK can compensate as players move or turn. |
 
 ---
 
@@ -196,7 +199,8 @@ trusted.
 1. Add the files to a Rojo project or copy the hierarchy manually.
 2. Make sure all characters are R15.
 3. Use two players in the same server.
-4. Each player holds `L` while facing the other (within `8` studs).
+4. Each player presses `L` once while facing the other (within `8` studs).
+5. Press `L` again to release the physical connection.
 
 `MAX_DISTANCE`, `MAX_LOOK_ANGLE_DEGREES`, `OFFER_TIMEOUT`, fade times, and IK
 smoothing are all centralized in `HandHoldingConfig`.
