@@ -16,26 +16,80 @@ local clamp = math.clamp
 local REFRESH_RATE = 3
 
 local ZONES = {}
+local islandNodesByModel: { [Model]: any } = {}
+local islandDestroyConnections: { [Model]: RBXScriptConnection } = {}
 
-local function IslandAdded(Island: Model)
-	Island = Island:: Model
-
-	if Island:WaitForChild('Center', 1) == nil then
+local function IslandRemoved(Island: Instance)
+	if not Island:IsA('Model') then
 		return
 	end
-	local Center: BasePart = Island:WaitForChild('Center'):: BasePart
+
+	local ModelIsland = Island :: Model
+	local Node = islandNodesByModel[ModelIsland]
+	if Node then
+		ISLAND_TREE:RemoveNode(Node)
+		islandNodesByModel[ModelIsland] = nil
+	end
+
+	local Connection = islandDestroyConnections[ModelIsland]
+	if Connection then
+		Connection:Disconnect()
+		islandDestroyConnections[ModelIsland] = nil
+	end
+end
+
+local function IslandAdded(Island: Instance)
+	if not Island:IsA('Model') then
+		return
+	end
+
+	local ModelIsland = Island :: Model
+	if islandNodesByModel[ModelIsland] or not ModelIsland:IsDescendantOf(workspace) then
+		return
+	end
+
+	local CenterInstance = ModelIsland:WaitForChild('Center', 1)
+	if CenterInstance == nil or not CenterInstance:IsA('BasePart') then
+		return
+	end
+	local Center = CenterInstance :: BasePart
 
 	local Radius = 0
-	local RadiusInstance: IntValue? = Island:FindFirstChild('Radius'):: IntValue?
-	if RadiusInstance then
+	local RadiusInstance = ModelIsland:FindFirstChild('Radius')
+	if RadiusInstance and RadiusInstance:IsA('IntValue') then
 		Radius = RadiusInstance.Value
 	else
-		Radius = (Island:GetExtentsSize() * Vector3.new(1, 0, 1)).Magnitude / 2
+		Radius = (ModelIsland:GetExtentsSize() * Vector3.new(1, 0, 1)).Magnitude / 2
 	end
-	ISLAND_TREE:CreateNode(Center.Position, {
-		Island = Island,
+
+	local Node = ISLAND_TREE:CreateNode(Center.Position, {
+		Island = ModelIsland,
 		Radius = Radius,
 	})
+	islandNodesByModel[ModelIsland] = Node
+	islandDestroyConnections[ModelIsland] = ModelIsland.Destroying:Connect(function()
+		IslandRemoved(ModelIsland)
+	end)
+end
+
+local function GetMapFolder(): Folder?
+	local Map = workspace:FindFirstChild('Map')
+	if Map and Map:IsA('Folder') then
+		return Map
+	end
+
+	if IS_SERVER then
+		local NewMap = Instance.new('Folder')
+		NewMap.Name = 'Map'
+		NewMap.Parent = workspace
+		return NewMap
+	end
+
+	local WaitedMap = workspace:WaitForChild('Map', 5)
+	if WaitedMap and WaitedMap:IsA('Folder') then
+		return WaitedMap
+	end
+	return nil
 end
 
 local ZoneManager = {}
@@ -146,18 +200,24 @@ end)
 CS:GetInstanceAddedSignal('Island'):Connect(function(Island)
 	IslandAdded(Island)
 end)
+CS:GetInstanceRemovedSignal('Island'):Connect(function(Island)
+	IslandRemoved(Island)
+end)
 for i, Island in CS:GetTagged('Island') do
-	if not Island:IsA('Model') then
-		continue
-	end
 	IslandAdded(Island)
 end
 
-for i, Island in workspace.Map:GetChildren() do
-	if not Island:IsA('Model') then
-		continue
+local Map = GetMapFolder()
+if Map then
+	for i, Island in Map:GetChildren() do
+		IslandAdded(Island)
 	end
-	IslandAdded(Island)
+	Map.ChildAdded:Connect(function(Island)
+		IslandAdded(Island)
+	end)
+	Map.ChildRemoved:Connect(function(Island)
+		IslandRemoved(Island)
+	end)
 end
 
 if IS_SERVER == false then

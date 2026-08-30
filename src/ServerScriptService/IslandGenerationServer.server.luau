@@ -9,9 +9,10 @@
 	Responsibilities:
 		* Ensure workspace.Map exists (the folder the ocean depth raycasts and
 		  ZoneManager both scan).
-		* Run one deterministic scatter pass at startup, cloning premade island
-		  templates from ServerStorage.Islands into workspace.Map and tagging them
-		  "Island" so ZoneManager indexes them.
+		* Start the deterministic streaming pass at startup. As players move, the
+		  generator caches island records around them, clones only nearby records,
+		  tweens them upward, and moves risen islands into workspace.Map tagged
+		  "Island" so ZoneManager indexes their final positions.
 		* Nothing here reads client input. There are no RemoteEvents: island
 		  placement is fully server-authoritative.
 
@@ -35,17 +36,16 @@ if not Workspace:FindFirstChild("Map") then
 	mapFolder.Parent = Workspace
 end
 
--- Run the (batched, yielding) scatter pass on its own thread so it never blocks
--- the rest of server startup.
+-- Start the (batched, yielding) streaming loop on its own thread so it never
+-- blocks the rest of server startup.
 task.spawn(function()
 	IslandGenerator.Generate()
 end)
 
 -- Note on regenerating / stale state:
--- IslandGenerator.ClearGenerated() removes every island the generator placed and
--- resets the placement octree, leaving any user-dropped anchors in workspace.Map
--- intact. Call it from the command bar or a future admin tool, then
--- IslandGenerator.Generate(), to rebuild deterministically (same world seed +
--- same ServerStorage.Islands content => same world). A player respawn or server
--- restart never leaves stale state because all content is anchored and owned by
--- the server.
+-- IslandGenerator.ClearGenerated() removes every generated island model and
+-- resets the streaming/cache/octree state, leaving any user-dropped anchors in
+-- workspace.Map intact. Call it from the command bar or a future admin tool,
+-- then IslandGenerator.Generate(), to restart deterministic streaming. A player
+-- respawn never leaves stale state because generated island content is anchored
+-- and owned by the server.

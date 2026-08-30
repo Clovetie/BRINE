@@ -2,12 +2,15 @@
 // Lightweight Luau syntax check for the BRINE project.
 //
 // `luaparse` understands standard Lua but not Luau-only syntax, so we strip
-// Luau type-assertion casts (`:: Type`) before parsing. This catches typos,
-// missing `end`, and other structural mistakes without requiring the full
-// Luau toolchain.
+// common Luau type syntax (`:: Type`, `type` aliases, etc.) before parsing.
+// This catches typos, missing `end`, and other structural mistakes without
+// requiring the full Luau toolchain.
 //
 // By default it checks the folders used by the new scripts:
 //   src/ReplicatedStorage/HandHolding
+//   src/ReplicatedStorage/IslandGeneration
+//   src/ReplicatedStorage/Gerstner/Helper.luau
+//   src/ReplicatedStorage/Gerstner/Serial/ZoneManager
 //   src/ServerScriptService
 //   src/StarterPlayerScripts
 //
@@ -25,6 +28,9 @@ const luaparse = require("luaparse");
 const root = path.resolve(__dirname, "..", "src");
 const DEFAULT_ROOTS = [
 	path.join(root, "ReplicatedStorage", "HandHolding"),
+	path.join(root, "ReplicatedStorage", "IslandGeneration"),
+	path.join(root, "ReplicatedStorage", "Gerstner", "Helper.luau"),
+	path.join(root, "ReplicatedStorage", "Gerstner", "Serial", "ZoneManager"),
 	path.join(root, "ServerScriptService"),
 	path.join(root, "StarterPlayerScripts"),
 ];
@@ -42,8 +48,29 @@ function collectLuauFiles(dir) {
 	return out;
 }
 
+function stripLuauTypeDeclarations(source) {
+	const lines = source.split("\n");
+	const out = [];
+	let skipping = false;
+	let braceDepth = 0;
+
+	for (const line of lines) {
+		const startsType = /^\s*(?:export\s+)?type\s+/.test(line);
+		if (startsType || skipping) {
+			braceDepth += (line.match(/\{/g) || []).length;
+			braceDepth -= (line.match(/\}/g) || []).length;
+			out.push("-- <luau type declaration removed>");
+			skipping = braceDepth > 0;
+			continue;
+		}
+		out.push(line);
+	}
+
+	return out.join("\n");
+}
+
 function stripLuauCasts(source) {
-	let out = source
+	let out = stripLuauTypeDeclarations(source)
 		// Type-assertion casts: `expr :: Type` and `expr :: (Type)`.
 		.replace(/::\s*[\w?]+(?:[\w?]|\.)*/g, "")
 		.replace(/::\s*\([^)]*\)/g, "");
@@ -51,9 +78,13 @@ function stripLuauCasts(source) {
 	// Luau `continue` statement: substitute a benign Lua 5.1 no-op statement.
 	out = out.replace(/(^|[^\w])continue(?=\s|$)/g, "$1do end");
 
-	// Turn Luau interpolated strings (`text {expr}`) into plain quoted strings
-	// so luaparse (Lua 5.1) doesn't choke on the backticks.
+	// Turn Luau interpolated strings (`text {expr}`) and ordinary quoted
+	// strings into placeholder quoted strings so luaparse (Lua 5.1) doesn't
+	// choke on backticks, and so the loose type-annotation regexes below never
+	// mistake a colon inside a string (for example a Roblox asset URI) for a
+	// Luau annotation.
 	out = out.replace(/`(?:[^`\\]|\\.)*`/g, '"<interpolated>"');
+	out = out.replace(/(["'])(?:\\.|(?!\1)[^\\\r\n])*\1/g, '"<string>"');
 
 	// Expand Luau compound assignment operators (+=, -=, *=, /=, //=, ^=, ..=)
 	// into plain `x = x op expr` form. Supports an optional statement prefix
@@ -93,8 +124,12 @@ function stripLuauCasts(source) {
 			// A type-annotation colon is never immediately followed (after
 			// optional space) by `(`` - that is always a method-call colon,
 			// which must be preserved. `(?!\\s*\\()` enforces that.
-			// 1) Return type after `)` (may be a nested table type with commas).
-			s = s.replace(/\)\s*:(?!\s*\()\s*[^;=()]*$/, ")");
+			// 1) Return type after a function declaration's closing `)`
+			//    (including tuple returns like `): (number, boolean)`). Do not
+			//    run this on method-call chains such as `Signal:Connect(...)`.
+			if (/^\s*(?:local\s+)?function\b/.test(s)) {
+				s = s.replace(/\)\s*:\s*.*$/, ")");
+			}
 			// 2) `: <type>` immediately followed by `,` `=` or `)` on the same
 			//    line -> drop the type, keep the delimiter (params / bindings).
 			s = s.replace(/:(?!\s*\()\s*[^,:;=(){}]*?(\{[^{}]*\})?\s*(?=\s*[,=)])/g, "");

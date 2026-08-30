@@ -54,8 +54,22 @@ local CHUNK_OFFSETS = {
 local GOLDEN_RATIO = 1.618
 
 local IslandParameters = RaycastParams.new()
-IslandParameters.FilterDescendantsInstances = { workspace.Map }
 IslandParameters.FilterType = Enum.RaycastFilterType.Include
+
+local function RefreshIslandRaycastFilter()
+	local Map = workspace:FindFirstChild('Map')
+	if Map then
+		IslandParameters.FilterDescendantsInstances = { Map }
+	else
+		IslandParameters.FilterDescendantsInstances = {}
+	end
+end
+RefreshIslandRaycastFilter()
+workspace.ChildAdded:Connect(function(Child)
+	if Child.Name == 'Map' then
+		RefreshIslandRaycastFilter()
+	end
+end)
 
 export type ZoneParameters = {
 	Type: string,
