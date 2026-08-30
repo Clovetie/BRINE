@@ -3,7 +3,7 @@
 --!optimize 2
 
 -- Ship singleton. The model must contain Main, VehicleSeat, and Client.
-local Ship = script.Parent
+local Ship = script.Parent :: Model
 local Players = game:GetService("Players")
 local PhysicsService = game:GetService("PhysicsService")
 
@@ -56,7 +56,7 @@ local function occupantChanged()
 			end
 
 			if not player.PlayerGui:FindFirstChild("Client") then
-				local client = script:WaitForChild("Client"):Clone()
+				local client = Ship:WaitForChild("Client"):Clone()
 				local shipReference = Instance.new("ObjectValue")
 				shipReference.Name = "Ship"
 				shipReference.Value = Ship
