@@ -232,45 +232,118 @@ FloatingObjectConfig.Streaming = {
 }
 
 --==========================================================================
--- BUOYANCY / PHYSICS LOD
+-- BUOYANCY / PHYSICS LOD  (ship-parity movement - see WaveFloat.luau)
 --==========================================================================
+-- Everything in this block exists to make a streamed prop ride the ocean the
+-- way `Workspace.singletons.Ship.Client` rides it: four surface samples taken
+-- at real Attachments on the hull, the ship's own drag/airborne model, and an
+-- AlignPosition/AlignOrientation pair updated at the ship's cadence and gains.
 FloatingObjectConfig.Buoyancy = {
-	-- When true, near players the objects are UNANCHORED, server-owned
-	-- assemblies driven by AlignPosition/AlignOrientation (the same modern
-	-- constraint pattern the ship singleton uses). When false, every
-	-- rendered object is an anchored static prop at the waterline.
+	-- When true, near players the objects are UNANCHORED assemblies driven by
+	-- AlignPosition/AlignOrientation (the same modern constraint pattern the
+	-- ship singleton uses). When false, every rendered object is an anchored
+	-- static prop at the waterline.
 	Enabled = true,
 
-	-- HeightLookup method: "FAST" (approximate Gerstner formula, cheapest)
-	-- or "PRECISE" (triangle interpolation). Both work on the server.
-	LookupMethod = "FAST",
+	-- Where the surface height comes from.
+	--   "ANALYTIC" (default) the Gerstner wave sum itself: cheap, continuous,
+	--                        works on the server and on clients with no
+	--                        EditableMesh/HeightLookup.ClientInit, and applies
+	--                        the whirlpool dip (HeightLookup only does that in
+	--                        its PRECISE branch).
+	--   "MESH"               HeightLookup.Lookup per sample - literally what
+	--                        the ship client does. Triangle-exact to the
+	--                        rendered water, but 4 grid searches per object per
+	--                        refresh; use it for hulls close to a player.
+	HeightSource = "ANALYTIC",
 
-	-- Each buoyant object's target is refreshed on a staggered clock every
-	-- UpdateInterval seconds. AlignPosition/AlignOrientation interpolate
-	-- between refreshes, so 8-12 Hz looks smooth at a fraction of the cost.
+	-- Only read by the "MESH" source. "PRECISE" = triangle interpolation
+	-- (what the ship uses). "FAST" = the folded-|sin| approximation, which
+	-- bobs objects to a DIFFERENT waveform than the mesh renders - it is here
+	-- as an emergency budget knob, not as a default.
+	LookupMethod = "PRECISE",
+
+	-- Refresh cadence. Objects inside `NearDistance` of a player are the ones
+	-- whose waterline you can actually see, so they get the ship's per-frame
+	-- treatment; everything else stays on the staggered clock and is budgeted
+	-- per frame so a full 500-object scene cannot spike the server.
 	UpdateInterval = 0.12,
-	MaxTargetUpdatesPerFrame = 60,
+	NearUpdateInterval = 0,
+	NearDistance = 150,
+	NearExitRatio = 1.3, -- hysteresis: leave the near band past 150 * 1.3
+	MaxTargetUpdatesPerFrame = 48,
+	NearMaxTargetUpdatesPerFrame = 24,
 
-	-- Wave zone multipliers (island/whirlpool damping) are re-read at most
-	-- this often per object; ZoneManager:GetZoneParameters is comparatively
+	-- Wave zone multipliers (island/whirlpool damping) are re-read at most this
+	-- often per object; ZoneManager:GetZoneParameters is comparatively
 	-- expensive so it must not run every frame.
 	ZoneRefreshInterval = 3,
 
-	-- AlignPosition force cap = AssemblyMass * workspace.Gravity * this.
-	ForceMultiplier = 5,
-	MaxVelocity = 25,
-	Responsiveness = 14,
+	-- Surface sample rig. Each buoyant object gets 4 corner Attachments,
+	-- `SampleInset` inside its bounding box, but never closer together than
+	-- `SlopeBaselineStuds`: a 3-stud crate only 3 studs wide would divide a
+	-- sub-stud height difference by 3 and read the sea as flat, and in "MESH"
+	-- mode both corners can land in one triangle and read it as flat exactly.
+	-- Widening the baseline is what lets small props tilt with the swell too.
+	SampleInset = 0.9,
+	SlopeBaselineStuds = 8,
 
-	-- AlignOrientation torque cap = AssemblyMass * this (matches the ship's
-	-- `Main.AssemblyMass * 5000` pattern).
+	-- AlignPosition force cap = AssemblyMass * workspace.Gravity * this, and
+	-- the rest of the position/orientation gains below are the ship's numbers
+	-- (`Ship.Client`: maxForce mass*g*4, MaxVelocity 80, Responsiveness 12,
+	-- MaxTorque AssemblyMass*5000, MaxAngularVelocity 8).
+	ForceMultiplier = 4,
+	MaxVelocity = 80,
+	Responsiveness = 12,
 	TorqueMultiplier = 5000,
-	MaxAngularVelocity = 6,
-	AngularResponsiveness = 10,
+	MaxAngularVelocity = 8,
+	AngularResponsiveness = 12,
 
-	-- Objects whose bounding-box XZ extent is below this use a cheap
-	-- single-point bob (1 height lookup) instead of the 4-point
-	-- BoatManager.CalculateBuoyancy sampling (4 lookups).
-	SmallObjectExtent = 6,
+	-- true -> the AlignPosition uses Enum.ForceLimitMode.PerAxis: the Y cap is
+	-- the buoyancy force and the X/Z caps are only the `DriftReturnForce`
+	-- share, so the servo can essentially only push vertically. That removes
+	-- the whole class of "what reference frame is AlignPosition.Position in"
+	-- problems (it is a world goal in OneAttachment mode), stops the
+	-- controller damping a player's horizontal shove, and - because
+	-- `ForceLimitMode.Magnitude` shares ONE cap across all three axes - it also
+	-- stops a sideways goal error from quietly eating the lift budget. The
+	-- ship still runs in Magnitude mode, which is why its `(0, TargetY, 0)`
+	-- goal is a real problem there and not here (see AUDIT.md B-14).
+	VerticalOnlyForce = true,
+
+	-- Soft gains: used instead of the ship's numbers when a prop is not in the
+	-- near band (its target only moves at UpdateInterval, so stiff gains make
+	-- the bob step) or when it is still far off its goal (just unfrozen, just
+	-- splashed, just flung by a player) - then it glides onto the surface
+	-- instead of snapping to it.
+	SoftMaxVelocity = 14,
+	SoftResponsiveness = 8,
+	SoftTorqueMultiplier = 1200,
+	SoftMaxAngularVelocity = 3,
+	SoftAngularResponsiveness = 8,
+	SettleDistance = 2, -- studs of vertical error that counts as "far off"
+	SettleAngleDegrees = 15, -- and so does this much attitude error
+
+	-- Heading. The hull's yaw is read off physics, smoothed, and re-commanded;
+	-- deviations bigger than the deadband are treated as a real push and taken
+	-- immediately, so debris can still be kicked around.
+	YawDeadbandDegrees = 5,
+	YawSmoothing = 0.25,
+
+	-- Fraction of the buoyancy force allowed to pull a pushed prop back toward
+	-- the spot it spawned at (its X/Z servo goal). 0 = props stay where a
+	-- player left them and drift forever.
+	DriftReturnForce = 0.12,
+
+	-- Network ownership. "Server" keeps physics authoritative here (determinism
+	-- + exploit resistance; the price is that local players push props with one
+	-- round trip of latency). "NearestPlayer" hands props inside `OwnDistance`
+	-- to the closest client, exactly like the ship is owned by whoever is
+	-- driving it, so the player who is looking at it simulates it at 60 fps.
+	Ownership = "Server",
+	OwnDistance = 150,
+	OwnKeepRatio = 1.6, -- keep an owner up to OwnDistance * this, no churn
+	MaxOwnedPerPlayer = 64,
 
 	-- An object that sinks this far below the water plane is considered lost
 	-- to physics (squeezed through the world) and permanently despawned.

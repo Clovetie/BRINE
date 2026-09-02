@@ -19,10 +19,13 @@
 		  (clients report camera position/look through the CameraReport
 		  RemoteEvent; stale/missing reports fall back to distance-only).
 		* Physics LOD:
-		    - Buoyant: near a player. Unanchored, server-owned assembly driven
-		      by AlignPosition/AlignOrientation toward the Gerstner wave
-		      surface (BoatManager.CalculateBuoyancy / HeightLookup), exactly
-		      like the ship singleton but on the server.
+		    - Buoyant: near a player. Unanchored assembly driven by
+		      AlignPosition/AlignOrientation toward the Gerstner wave surface
+		      through WaveFloat, which applies the ship's own buoyancy model
+		      (4 hull-attached surface samples, mean height for the ride,
+		      height differences for pitch/roll, proportional drag, an
+		      airborne gate). Close objects are refreshed every frame like the
+		      ship; the rest ride a staggered clock with softer gains.
 		    - Frozen: visible but far. Anchored in place, constraints
 		      disabled - zero physics and zero replication cost.
 		    - Cached: unseen (or out of range) - the clone is destroyed and
@@ -49,6 +52,9 @@
 		Model / PVInstance    https://create.roblox.com/docs/studio/pivot-tools
 		AlignPosition         https://create.roblox.com/docs/reference/engine/classes/AlignPosition
 		AlignOrientation      https://create.roblox.com/docs/reference/engine/classes/AlignOrientation
+		Mover constraints     https://create.roblox.com/docs/physics/mover-constraints
+		ForceLimitMode        https://create.roblox.com/docs/reference/engine/enums/ForceLimitMode
+		Attachment            https://create.roblox.com/docs/reference/engine/classes/Attachment
 		WeldConstraint        https://create.roblox.com/docs/reference/engine/classes/WeldConstraint
 		Network ownership     https://create.roblox.com/docs/physics/network-ownership
 		Task scheduler        https://create.roblox.com/docs/scripting/scheduler
@@ -65,9 +71,8 @@ local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(script.Parent.FloatingObjectConfig)
+local WaveFloat = require(script.Parent.WaveFloat)
 local OctreeModule = require(ReplicatedStorage:WaitForChild("Octree"))
-local BoatManager = require(ReplicatedStorage.Gerstner.Serial.BoatManager)
-local HeightLookup = require(ReplicatedStorage.Gerstner.HeightLookup)
 local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
 
 local PLANE_Y = Config.PlaneOffset
@@ -111,6 +116,10 @@ local placedRecords = {}
 
 -- Per-player camera interest, fed by FloatingObjectGenerator.SetCameraState.
 local cameraStates = {} -- [Player] = { pos: Vector3, look: Vector3, at: number }
+
+-- How many buoyant objects each client is currently simulating, only used when
+-- Buoyancy.Ownership = "NearestPlayer" (see setOwnership).
+local ownedCountByPlayer = {} -- [Player] = number
 
 -- Catalog / loop state.
 local catalog = nil
@@ -324,7 +333,12 @@ local function getPlayerRoot(player: Player): BasePart?
 	return nil
 end
 
-local function distanceSqToNearestPlayer(centerPos: Vector3): number
+-- Closest living player to a world point, and the squared XZ distance to them
+-- (nil + math.huge when nobody qualifies). Drives the simulation band, the
+-- render-cap culling, and - if configured - network ownership, so it is
+-- computed once per decision instead of per question.
+local function nearestPlayerInfo(centerPos: Vector3)
+	local bestPlayer: Player? = nil
 	local best = math.huge
 	for _, player in Players:GetPlayers() do
 		local root = getPlayerRoot(player)
@@ -334,10 +348,28 @@ local function distanceSqToNearestPlayer(centerPos: Vector3): number
 			local distSq = dx * dx + dz * dz
 			if distSq < best then
 				best = distSq
+				bestPlayer = player
 			end
 		end
 	end
-	return best
+	return bestPlayer, best
+end
+
+local function distanceSqToNearestPlayer(centerPos: Vector3): number
+	local _, distSq = nearestPlayerInfo(centerPos)
+	return distSq
+end
+
+-- Distance from one specific player's root to a point. Used to decide whether
+-- a prop's current network owner is still close enough to keep it.
+local function distanceSqFromPlayer(player: Player, x: number, z: number): number
+	local root = getPlayerRoot(player)
+	if not root then
+		return math.huge
+	end
+	local dx = root.Position.X - x
+	local dz = root.Position.Z - z
+	return dx * dx + dz * dz
 end
 
 local function getRecordWorldPos(record): Vector3
@@ -345,6 +377,34 @@ local function getRecordWorldPos(record): Vector3
 		return record.hull.Position
 	end
 	return record.centerPos
+end
+
+--[[
+	Which buoyancy cadence a record rides: the per-frame near band (an object
+	gets the ship's own treatment - goals refreshed every simulation step with
+	the ship's gains) or the staggered `UpdateInterval` clock.
+
+	The streaming step owns this decision rather than the buoyancy loop: it
+	already measured the distance to the nearest player, it runs at a sane
+	throttle, and a cadence choice does not need to be re-litigated 60 times a
+	second. The exit radius is wider than the entry radius so an object sitting
+	on the band edge cannot flip its gains every cycle.
+]]
+local function updateSimBand(record, nearestSq: number)
+	local buoyancyConfig = getBuoyancyConfig()
+	local nearDistance = buoyancyConfig.NearDistance or 150
+	if nearDistance <= 0 then
+		record.nearPlayer = false
+		return
+	end
+	if record.nearPlayer then
+		local exitDistance = nearDistance * (buoyancyConfig.NearExitRatio or 1.3)
+		if nearestSq > exitDistance * exitDistance then
+			record.nearPlayer = false
+		end
+	else
+		record.nearPlayer = nearestSq <= nearDistance * nearDistance
+	end
 end
 
 -- Camera interest ---------------------------------------------------------------
@@ -621,19 +681,35 @@ local function refreshZone(record, now: number)
 	sim.nextZoneAt = now + (getBuoyancyConfig().ZoneRefreshInterval or 3)
 end
 
--- Refreshes one buoyant object's AlignPosition/AlignOrientation targets.
--- Called on a staggered clock (Buoyancy.UpdateInterval per object, budgeted
--- per frame) - the constraints interpolate between refreshes.
-local function applyBuoyancyTarget(record, now: number)
+--[[
+	Refreshes one buoyant object's AlignPosition / AlignOrientation goals.
+
+	`near` picks the cadence class, decided by the streaming step (it knows how
+	far the closest player is) and used here:
+
+		* near  -> refreshed every frame with the ship's own gains, i.e. exactly
+		  what `Ship.Client` does in its PostSimulation callback;
+		* not   -> refreshed on the staggered `UpdateInterval` clock, and with
+		  the SOFT gains, so a goal that only moves 8 times a second arrives as
+		  a glide rather than a staircase.
+
+	The soft gains are also used whenever the object is far off its goal - just
+	unfrozen from the LOD band, just splashed back down, or just kicked by a
+	player - which is what stops a prop teleporting onto the waterline.
+]]
+local function applyBuoyancyTarget(record, now: number, near: boolean, buoyancyConfig)
 	local sim = record.sim
 	local hull = record.hull
 	if not sim or not hull or not hull.Parent then
 		return
 	end
 
+	local interval = near and (buoyancyConfig.NearUpdateInterval or 0) or (buoyancyConfig.UpdateInterval or 0.12)
+	sim.nextUpdateAt = now + interval
+
 	-- Physics escape hatch: an object squeezed far below the water plane is
 	-- gone for good; reclaim its render slot.
-	if hull.Position.Y < PLANE_Y - (getBuoyancyConfig().KillDepth or 160) then
+	if hull.Position.Y < PLANE_Y - (buoyancyConfig.KillDepth or 160) then
 		cacheObjectRecord(record, "Lost", true)
 		return
 	end
@@ -642,59 +718,109 @@ local function applyBuoyancyTarget(record, now: number)
 		refreshZone(record, now)
 	end
 
-	local zone = sim.zone
-	local lookupMethod = getBuoyancyConfig().LookupMethod or "FAST"
+	-- The ship's buoyancy model, sampled at this object's own hull attachments
+	-- (see WaveFloat). `waterline` is the depth reference and `slopeX/slopeZ`
+	-- are the distances the corner samples actually sit at.
+	local targetY, orientation, depth, failed = WaveFloat.Solve(
+		sim.points,
+		hull.AssemblyCenterOfMass.Y,
+		sim.waterline.WorldPosition.Y,
+		sim.slopeZ,
+		sim.slopeX,
+		sim.heightParam,
+		sim.zone,
+		buoyancyConfig.HeightSource or "ANALYTIC",
+		buoyancyConfig.LookupMethod or "PRECISE",
+		now
+	)
 
-	local heightVector, orientation, depth
-	if sim.points then
-		heightVector, orientation, depth = BoatManager.CalculateBuoyancy(
-			hull.CenterOfMass,
-			sim.mover.WorldPosition,
-			sim.points,
-			sim.length,
-			sim.width,
-			sim.heightParam,
-			zone
-		)
-	else
-		-- Cheap single-point bob for small objects: 1 lookup instead of 4.
-		local height = HeightLookup.Lookup(
-			hull.Position,
-			lookupMethod,
-			false,
-			zone.SpeedMultiplier,
-			zone.PhaseMultiplier,
-			zone.AmplitudeMultiplier,
-			zone.CURRENT_ZONE
-		)
-		if height <= -0.9 then
-			-- Lookup failed (e.g. PRECISE found no triangle); keep the last
-			-- target and retry shortly instead of disabling the sim.
-			sim.nextUpdateAt = now + 0.25
-			return
-		end
-		heightVector = Vector3.new(0, height + sim.heightParam, 0)
-		orientation = CFrame.fromEulerAnglesXYZ(0, 0, 0)
-		depth = 0
+	if failed then
+		-- A MESH lookup could not resolve the surface (no triangle under the
+		-- point). Keep the previous goal and retry shortly rather than
+		-- disabling the sim, which would drop the object through the water.
+		sim.nextUpdateAt = now + 0.25
+		return
 	end
 
-	if heightVector ~= Vector3.zero then
-		sim.alignPosition.Enabled = true
-		sim.alignPosition.MaxForce = sim.maxForceBase * (1 + depth / 10)
-		-- OneAttachment mode targets a WORLD position, so keep the hull's
-		-- current X/Z and only drive Y - otherwise every object would be
-		-- dragged toward the world origin.
-		sim.alignPosition.Position = Vector3.new(hull.Position.X, heightVector.Y, hull.Position.Z)
+	-- Heading. Commanded, not copied raw off the bobbing hull - see
+	-- WaveFloat.AdvanceYaw.
+	local yaw = WaveFloat.AdvanceYaw(
+		sim.yaw,
+		currentYaw(hull),
+		math.rad(buoyancyConfig.YawDeadbandDegrees or 5),
+		buoyancyConfig.YawSmoothing or 0.25
+	)
+	sim.yaw = yaw
+	local goal = CFrame.fromEulerAnglesXYZ(0, yaw, 0) * orientation
+
+	-- "Far off the goal" is measured the way the constraint sees it: the height
+	-- error at the mover attachment, and the angle between the hull's up axis
+	-- and the goal's.
+	local errorY = 0
+	if targetY ~= nil then
+		errorY = math.abs(targetY - sim.mover.WorldPosition.Y)
+	end
+	local settleCos = math.cos(math.rad(buoyancyConfig.SettleAngleDegrees or 15))
+	local soft = not near
+		or errorY > (buoyancyConfig.SettleDistance or 2)
+		or goal.UpVector:Dot(hull.CFrame.UpVector) < settleCos
+
+	-- Attitude is commanded even while the object is in the air - the ship keeps
+	-- writing its orientation through its airborne window too - so a prop lands
+	-- matching the wave it is about to hit instead of in whatever pose it left
+	-- the crest in.
+	local alignOrientation = sim.alignOrientation
+	alignOrientation.CFrame = goal
+	if soft then
+		alignOrientation.MaxTorque = sim.mass * (buoyancyConfig.SoftTorqueMultiplier or 1200)
+		alignOrientation.MaxAngularVelocity = buoyancyConfig.SoftMaxAngularVelocity or 3
+		alignOrientation.Responsiveness = buoyancyConfig.SoftAngularResponsiveness or 8
 	else
-		-- CalculateBuoyancy says the object is fully out of the water
-		-- (airborne); let gravity act until it splashes back in.
-		sim.alignPosition.Enabled = false
+		alignOrientation.MaxTorque = sim.torqueBase
+		alignOrientation.MaxAngularVelocity = buoyancyConfig.MaxAngularVelocity or 8
+		alignOrientation.Responsiveness = buoyancyConfig.AngularResponsiveness or 12
 	end
 
-	-- Compose the wave pitch/roll with the hull's CURRENT heading so players
-	-- can still nudge objects around without the sim snapping their yaw.
-	sim.alignOrientation.CFrame = CFrame.fromEulerAnglesXYZ(0, currentYaw(hull), 0) * orientation
-	sim.nextUpdateAt = now + (getBuoyancyConfig().UpdateInterval or 0.12)
+	local alignPosition = sim.alignPosition
+	if targetY == nil then
+		-- WaveFloat says the bottom of the hull is clear of the water: stop
+		-- driving it and let gravity bring it back down, which is the ship's
+		-- `alignPosition.Enabled = false` during its airborne window.
+		alignPosition.Enabled = false
+		return
+	end
+
+	if soft then
+		alignPosition.MaxVelocity = buoyancyConfig.SoftMaxVelocity or 14
+		alignPosition.Responsiveness = buoyancyConfig.SoftResponsiveness or 8
+	else
+		alignPosition.MaxVelocity = buoyancyConfig.MaxVelocity or 80
+		alignPosition.Responsiveness = buoyancyConfig.Responsiveness or 12
+	end
+
+	local driveY = sim.maxForceBase * (1 + depth / 10)
+	if sim.verticalOnly then
+		-- PerAxis limits: the servo can only push along Y, so nothing in
+		-- the goal's X/Z can pull the object sideways. `DriftReturnForce`
+		-- buys back a little horizontal authority so a kicked prop slowly
+		-- returns to its patch of ocean instead of sailing off.
+		local drift = driveY * (buoyancyConfig.DriftReturnForce or 0)
+		alignPosition.MaxAxesForce = Vector3.new(drift, driveY, drift)
+	else
+		alignPosition.MaxForce = driveY
+	end
+
+	-- In OneAttachment mode `Position` is a WORLD goal, so the X/Z we write
+	-- is where the attachment is driven to: the object's own spawn column
+	-- when drift-return is armed, otherwise its current column (zero
+	-- horizontal error -> the servo only ever corrects height).
+	local attachPos = sim.mover.WorldPosition
+	local goalX, goalZ = attachPos.X, attachPos.Z
+	if (buoyancyConfig.DriftReturnForce or 0) > 0 then
+		goalX, goalZ = sim.homeX, sim.homeZ
+	end
+	alignPosition.Position = Vector3.new(goalX, targetY, goalZ)
+	alignPosition.Enabled = true
 end
 
 -- Record/model lifecycle ---------------------------------------------------------
@@ -720,21 +846,109 @@ local function unmarkRendered(record)
 	end
 end
 
-local function setOwnership(record)
+--[[
+	Network ownership for one rendered object.
+
+	"Server" (the default) keeps physics authoritative here: deterministic, and
+	an exploiter cannot fling a prop at a player. The price is that a player who
+	pushes a prop does it through a round trip.
+
+	"NearestPlayer" is what makes the SHIP feel right, applied to props: the
+	client closest to an assembly simulates it at 60 fps, so the player looking
+	at a prop sees it move in perfect lockstep with the water they are simulating
+	locally. `AlignPosition.Position`/`MaxAxesForce` are still written by the
+	server - only the simulation moves - so the wave field stays a single source
+	of truth.
+
+	Ownership is only ever changed from the streaming step (never per frame), is
+	limited to objects inside `OwnDistance`, is capped per player, and is sticky
+	inside `OwnDistance * OwnKeepRatio`, so walking around does not make whole
+	clusters of props hop between clients.
+]]
+local function setOwnership(record, canOwn: boolean?)
 	local parts = record.parts
 	if not parts then
 		return
 	end
-	for _, part in parts do
-		if part.Parent and part:IsA("BasePart") then
-			local ok = pcall(function()
-				return part:CanSetNetworkOwnership()
-			end)
-			if ok and part:CanSetNetworkOwnership() then
-				part:SetNetworkOwner(nil) -- server owns the physics
+
+	local buoyancyConfig = getBuoyancyConfig()
+	local want: Player? = nil
+
+	if canOwn ~= false and buoyancyConfig.Ownership == "NearestPlayer" then
+		local ownDistance = buoyancyConfig.OwnDistance or 150
+		local maxOwned = buoyancyConfig.MaxOwnedPerPlayer or 64
+		local pos = getRecordWorldPos(record)
+		local nearest, nearestSq = record.nearestPlayer, record.nearestSq
+		if not nearestSq then
+			nearest, nearestSq = nearestPlayerInfo(pos)
+		end
+
+		if nearest and nearestSq <= ownDistance * ownDistance then
+			want = nearest
+			-- Prefer the current owner while it is still close: handing an
+			-- assembly between peers costs a physics handoff, and the previous
+			-- owner then sees its own prop stutter.
+			local current = record.owner
+			if current and current ~= nearest then
+				local keepDistance = ownDistance * (buoyancyConfig.OwnKeepRatio or 1.6)
+				if distanceSqFromPlayer(current, pos.X, pos.Z) <= keepDistance * keepDistance then
+					want = current
+				end
+			end
+			if want ~= record.owner and (ownedCountByPlayer[want] or 0) >= maxOwned then
+				want = nil -- that player is already simulating enough props
 			end
 		end
 	end
+
+	local current = record.owner
+	if current == want then
+		return
+	end
+	if current then
+		ownedCountByPlayer[current] = math.max(0, (ownedCountByPlayer[current] or 1) - 1)
+	end
+	if want then
+		ownedCountByPlayer[want] = (ownedCountByPlayer[want] or 0) + 1
+	end
+	record.owner = want
+
+	for _, part in parts do
+		if part.Parent and part:IsA("BasePart") and not part.Anchored then
+			local ok, canSet = pcall(function()
+				return part:CanSetNetworkOwnership()
+			end)
+			if ok and canSet then
+				part:SetNetworkOwner(want)
+			end
+		end
+	end
+end
+
+-- Drops the per-player bookkeeping for a record that no longer needs an owner
+-- (cached, despawned, or its owner left). The parts go away with the clone, so
+-- there is no ownership to hand back - only the tally.
+local function forgetOwnership(record)
+	local owner = record.owner
+	if owner then
+		record.owner = nil
+		local count = ownedCountByPlayer[owner]
+		if count and count > 1 then
+			ownedCountByPlayer[owner] = count - 1
+		else
+			ownedCountByPlayer[owner] = nil
+		end
+	end
+end
+
+-- Total number of rendered props clients are simulating for us. Exposed in
+-- GetStats so a server under load can see the ownership mode doing its job.
+local function clientOwnedCount(): number
+	local total = 0
+	for _, count in ownedCountByPlayer do
+		total += count
+	end
+	return total
 end
 
 -- Anchors/unanchors the whole assembly and toggles its constraints.
@@ -752,6 +966,13 @@ local function setObjectFrozen(record, frozen: boolean)
 		sim.alignOrientation.Enabled = not frozen and isBuoyancyEnabled()
 	end
 
+	if frozen then
+		-- Hand the assembly back to the server BEFORE it is anchored: an
+		-- anchored part cannot hold a network owner, and taking a client-owned
+		-- prop away mid-simulation is how parts end up desynced between peers.
+		setOwnership(record, false)
+	end
+
 	for _, part in parts do
 		if part.Parent then
 			part.Anchored = frozen
@@ -767,11 +988,16 @@ local function setObjectFrozen(record, frozen: boolean)
 			hull.AssemblyLinearVelocity = Vector3.zero
 			hull.AssemblyAngularVelocity = Vector3.zero
 		end
-		setOwnership(record)
 		if sim then
-			sim.nextUpdateAt = 0 -- refresh targets immediately
+			-- Resume from the pose the object is actually in (a frozen prop kept
+			-- its heading, but the water under it moved on), refresh next frame,
+			-- and stay on the soft gains so it eases onto the surface instead of
+			-- snapping to it from wherever it froze.
+			sim.yaw = currentYaw(hull)
+			sim.nextUpdateAt = 0
 			buoyantRecords[record] = true
 		end
+		setOwnership(record, true)
 	elseif sim then
 		buoyantRecords[record] = nil
 	end
@@ -789,6 +1015,9 @@ end
 -- permanently despawns it (`permanent`, e.g. lifetime expiry / physics loss).
 function cacheObjectRecord(record, reason: string, permanent: boolean?)
 	disconnectRecordSignals(record)
+	forgetOwnership(record)
+	record.nearestPlayer = nil
+	record.nearestSq = nil
 
 	local model = record.model
 	if model then
@@ -918,8 +1147,11 @@ local function buildClone(record): Model?
 	return clone
 end
 
--- Builds the buoyancy rig (mover attachment + constraints + sample points)
--- once the clone is parented and physics properties are readable.
+-- Builds the buoyancy rig: the mover + waterline attachments, the four surface
+-- sample attachments, and the AlignPosition/AlignOrientation pair that drives
+-- them - deliberately the same rig shape the ship singleton builds for itself
+-- in `Ship.Client`. Called once the clone is parented, so mass and world
+-- transforms are readable.
 local function buildSim(record)
 	local model = record.model
 	local hull = record.hull
@@ -929,9 +1161,22 @@ local function buildSim(record)
 
 	local buoyancyConfig = getBuoyancyConfig()
 	local bboxCFrame, bboxSize = model:GetBoundingBox()
-	local halfWidth = bboxSize.X / 2
-	local halfLength = bboxSize.Z / 2
-	local extentXZ = math.max(bboxSize.X, bboxSize.Z)
+	local inset = buoyancyConfig.SampleInset or 0.9
+	local halfWidth = (bboxSize.X * inset) / 2
+	local halfLength = (bboxSize.Z * inset) / 2
+
+	-- A 3-stud crate 3 studs wide divides a sub-stud height difference by 3 and
+	-- concludes the sea is flat - and with the MESH source both corners can
+	-- land inside one ocean triangle, which says exactly the same thing.
+	-- Widening the sample baseline to at least `SlopeBaselineStuds` is what
+	-- lets a small prop read a meaningful slope and tilt with the swell.
+	local baseline = math.max(buoyancyConfig.SlopeBaselineStuds or 8, 2)
+	if halfWidth * 2 < baseline then
+		halfWidth = baseline / 2
+	end
+	if halfLength * 2 < baseline then
+		halfLength = baseline / 2
+	end
 
 	-- Fraction of the object's height riding ABOVE the waterline.
 	local floatRatio = record.floatRatio or 0.5
@@ -942,18 +1187,48 @@ local function buildSim(record)
 	mover.CFrame = hull.CFrame:ToObjectSpace(bboxCFrame)
 	mover.Parent = hull
 
+	-- Depth reference = the hull's bottom, mirroring the ship's `Main.Center`
+	-- attachment. It must NOT be the bounding-box centre: for a tall template
+	-- (wreck with a mast, dock with a cabin) the centre sits far above the
+	-- water, the airborne gate then reads "clear air under the keel", switches
+	-- the servo off, and the object free-falls out of the ocean until the
+	-- kill-depth reaper despawns it.
+	local waterline = Instance.new("Attachment")
+	waterline.Name = "FloatingWaterline"
+	waterline.CFrame = hull.CFrame:ToObjectSpace(bboxCFrame * CFrame.new(0, -bboxSize.Y / 2, 0))
+	waterline.Parent = hull
+
 	local mass = math.max(hull.AssemblyMass, 0.1)
-	local maxForceBase = mass * Workspace.Gravity * (buoyancyConfig.ForceMultiplier or 5)
+	local forceBase = mass * Workspace.Gravity * (buoyancyConfig.ForceMultiplier or 4)
+	local verticalOnly = buoyancyConfig.VerticalOnlyForce ~= false
 
 	local alignPosition = Instance.new("AlignPosition")
 	alignPosition.Name = "FloatingBuoyancy"
 	alignPosition.Mode = Enum.PositionAlignmentMode.OneAttachment
 	alignPosition.Attachment0 = mover
 	alignPosition.ApplyAtCenterOfMass = true
-	alignPosition.MaxForce = maxForceBase
-	alignPosition.MaxVelocity = buoyancyConfig.MaxVelocity or 25
-	alignPosition.Responsiveness = buoyancyConfig.Responsiveness or 14
 	alignPosition.RigidityEnabled = false
+	if verticalOnly then
+		-- PerAxis caps each axis on its own, so buoyancy can only exist along
+		-- Y: the servo cannot drag a prop sideways out of a wave, and it stops
+		-- damping the horizontal shove a player gives it. In Magnitude mode
+		-- `MaxForce` caps the TOTAL force, so any X/Z error in the goal eats
+		-- the budget that should be lifting the hull.
+		alignPosition.ForceLimitMode = Enum.ForceLimitMode.PerAxis
+		alignPosition.ForceRelativeTo = Enum.ActuatorRelativeTo.World
+		alignPosition.MaxAxesForce = Vector3.new(0, forceBase, 0)
+	else
+		alignPosition.MaxForce = forceBase
+	end
+	-- Start on the soft gains: a freshly rendered prop glides onto the surface
+	-- instead of snapping to it. `applyBuoyancyTarget` promotes them once it is
+	-- actually riding the wave.
+	alignPosition.MaxVelocity = buoyancyConfig.SoftMaxVelocity or 14
+	alignPosition.Responsiveness = buoyancyConfig.SoftResponsiveness or 8
+	-- Seed the goal with the attachment's own position: `Enabled` is false, but
+	-- an object that freezes again before its first refresh must not inherit a
+	-- stale goal, and one frame of physics runs before the loop writes a target.
+	alignPosition.Position = mover.WorldPosition
 	alignPosition.Enabled = false
 	alignPosition.Parent = hull
 
@@ -961,43 +1236,49 @@ local function buildSim(record)
 	alignOrientation.Name = "FloatingWaveOrientation"
 	alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
 	alignOrientation.Attachment0 = mover
-	alignOrientation.MaxTorque = mass * (buoyancyConfig.TorqueMultiplier or 5000)
-	alignOrientation.MaxAngularVelocity = buoyancyConfig.MaxAngularVelocity or 6
-	alignOrientation.Responsiveness = buoyancyConfig.AngularResponsiveness or 10
+	alignOrientation.MaxTorque = mass * (buoyancyConfig.SoftTorqueMultiplier or 1200)
+	alignOrientation.MaxAngularVelocity = buoyancyConfig.SoftMaxAngularVelocity or 3
+	alignOrientation.Responsiveness = buoyancyConfig.SoftAngularResponsiveness or 8
 	alignOrientation.RigidityEnabled = false
 	alignOrientation.Enabled = false
 	alignOrientation.Parent = hull
 
-	-- 4-point sampling only pays off on objects large enough to pitch/roll;
-	-- small ones use the cheap single-point bob in applyBuoyancyTarget.
-	local points = nil
-	if extentXZ > (buoyancyConfig.SmallObjectExtent or 6) then
-		local inset = 0.9
-		local function cornerAttachment(name: string, sx: number, sz: number): Attachment
-			local attachment = Instance.new("Attachment")
-			attachment.Name = name
-			local corner = bboxCFrame * CFrame.new(sx * halfWidth * inset, 0, sz * halfLength * inset)
-			attachment.CFrame = hull.CFrame:ToObjectSpace(corner)
-			attachment.Parent = hull
-			return attachment
-		end
+	-- Four hull-attached samples, ordered like BoatManager expects so the rig
+	-- reads the same as the ship's `Main` attachments: front = -Z, right = +X.
+	local function cornerAttachment(name: string, sx: number, sz: number): Attachment
+		local attachment = Instance.new("Attachment")
+		attachment.Name = name
+		local corner = bboxCFrame * CFrame.new(sx * halfWidth, 0, sz * halfLength)
+		attachment.CFrame = hull.CFrame:ToObjectSpace(corner)
+		attachment.Parent = hull
+		return attachment
+	end
+
+	local moverWorld = mover.WorldPosition
+	record.sim = {
+		mover = mover,
+		waterline = waterline,
+		alignPosition = alignPosition,
+		alignOrientation = alignOrientation,
 		points = {
 			cornerAttachment("FloatTopLeft", -1, -1), -- front-left
 			cornerAttachment("FloatTopRight", 1, -1), -- front-right
 			cornerAttachment("FloatBottomLeft", -1, 1), -- back-left
 			cornerAttachment("FloatBottomRight", 1, 1), -- back-right
-		}
-	end
-
-	record.sim = {
-		mover = mover,
-		alignPosition = alignPosition,
-		alignOrientation = alignOrientation,
-		points = points,
-		length = bboxSize.Z,
-		width = bboxSize.X,
+		},
+		-- The distances the samples actually sit AT: the solver divides the
+		-- height differences by these to get the slope, so they must match the
+		-- (possibly widened) rig geometry, not the raw bounding box.
+		slopeX = halfWidth * 2,
+		slopeZ = halfLength * 2,
 		heightParam = heightParam,
-		maxForceBase = maxForceBase,
+		mass = mass,
+		maxForceBase = forceBase,
+		torqueBase = mass * (buoyancyConfig.TorqueMultiplier or 5000),
+		verticalOnly = verticalOnly,
+		homeX = moverWorld.X,
+		homeZ = moverWorld.Z,
+		yaw = record.yaw or 0,
 		nextUpdateAt = 0,
 		nextZoneAt = 0,
 		zone = {
@@ -1010,8 +1291,10 @@ local function buildSim(record)
 end
 
 -- Spawns (renders) a cached record: clones the template, welds/unanchors the
--- assembly, parents it under workspace._FloatingObjects, takes server
--- network ownership, and starts it in Buoyant or Frozen state.
+-- assembly, seats it on the WAVE it is supposed to be floating on (not the
+-- flat mean waterline - a prop that pops in a stud under the surface starts
+-- its life being dragged up, which reads as a hitch), rigs its buoyancy
+-- attachments, and starts it in Buoyant or Frozen state.
 local function spawnRecord(record, wantFrozen: boolean?): Model?
 	if record.dead or record.rendered then
 		return record.model
@@ -1058,10 +1341,29 @@ local function spawnRecord(record, wantFrozen: boolean?): Model?
 	end
 
 	-- Seat the bounding-box center at its float height, with the record yaw.
+	-- The height uses the ACTUAL surface, not the mean waterline: spawning on
+	-- PLANE_Y meant every prop had to be dragged up out of a trough (or dropped
+	-- into one) the instant it appeared, which is exactly the pop-in the ship
+	-- never has because it is seated on the wave it is standing on.
 	local _, bboxSize = model:GetBoundingBox()
-	local pivotY = PLANE_Y + bboxSize.Y * ((record.floatRatio or 0.5) - 0.5)
+	local buoyancyConfig = getBuoyancyConfig()
+	local surfaceY = WaveFloat.HeightAt(
+		record.centerPos,
+		nil,
+		buoyancyConfig.HeightSource or "ANALYTIC",
+		buoyancyConfig.LookupMethod or "PRECISE",
+		now
+	) or PLANE_Y
+	local pivotY = surfaceY + bboxSize.Y * ((record.floatRatio or 0.5) - 0.5)
 	local pivot = CFrame.new(record.centerPos.X, pivotY, record.centerPos.Z) * CFrame.Angles(0, record.yaw, 0)
 	model:PivotTo(pivot)
+
+	-- Seed the cadence band so a PlaceOne()/debug spawn near a player starts
+	-- in the near band instead of waiting for the next streaming cycle.
+	local nearestPlayer, nearestSq = nearestPlayerInfo(record.centerPos)
+	record.nearestPlayer = nearestPlayer
+	record.nearestSq = nearestSq
+	updateSimBand(record, nearestSq)
 
 	record.model = model
 	record.hull = model.PrimaryPart
@@ -1080,7 +1382,6 @@ local function spawnRecord(record, wantFrozen: boolean?): Model?
 	end
 	model.Parent = ensureContainerFolder()
 
-	setOwnership(record)
 	buildSim(record)
 
 	recordsByModel[model] = record
@@ -1414,8 +1715,14 @@ local function recordHasInterest(record, now: number): (boolean, boolean)
 	local streamingConfig = getStreamingConfig()
 	local cacheDistance = streamingConfig.CacheDistance or 650
 	local pos = getRecordWorldPos(record)
-	local nearestSq = distanceSqToNearestPlayer(pos)
+	local nearestPlayer, nearestSq = nearestPlayerInfo(pos)
 	local simDistance = record.simDistance or 200
+
+	-- `setOwnership` runs in the same streaming cycle and reuses these instead
+	-- of scanning the player list a second time per object.
+	record.nearestPlayer = nearestPlayer
+	record.nearestSq = nearestSq
+	updateSimBand(record, nearestSq)
 
 	if nearestSq > cacheDistance * cacheDistance then
 		return false, false
@@ -1502,6 +1809,11 @@ local function updateActiveLOD()
 				setObjectFrozen(record, true)
 			elseif not shouldFreeze and record.state == "Frozen" then
 				setObjectFrozen(record, false)
+			elseif not shouldFreeze then
+				-- Already buoyant: keep network ownership in step with the
+				-- players moving around it. A no-op unless the mode is
+				-- "NearestPlayer" and the closest client actually changed.
+				setOwnership(record, true)
 			end
 		end
 	end
@@ -1643,9 +1955,18 @@ end
 
 -- Frame-budgeted buoyancy scheduler ------------------------------------------------
 
--- Refreshes due buoyancy targets every frame with a hard per-frame budget.
--- Objects carry staggered nextUpdateAt clocks, so a full 500-object scene
--- spreads its wave lookups instead of spiking one frame.
+--[[
+	Refreshes due buoyancy targets every frame, in two classes:
+
+		* the near band (an object a player is standing next to, where the
+		  waterline is legible) is refreshed every step with the ship's gains -
+		  same as `Ship.Client`;
+		* everything else rides its staggered `nextUpdateAt` clock.
+
+	Both classes have their own per-frame budget, and an object that runs out of
+	near-band budget is not skipped: it falls through to the staggered class and
+	is serviced there, so a crowded dock cannot starve the props behind it.
+]]
 local function startBuoyancyLoop()
 	if buoyancyConnection then
 		return
@@ -1653,16 +1974,22 @@ local function startBuoyancyLoop()
 
 	buoyancyConnection = RunService.PostSimulation:Connect(function()
 		local now = getNow()
-		local budget = getBuoyancyConfig().MaxTargetUpdatesPerFrame or 60
+		local buoyancyConfig = getBuoyancyConfig()
+		local nearBudget = buoyancyConfig.NearMaxTargetUpdatesPerFrame or 24
+		local budget = buoyancyConfig.MaxTargetUpdatesPerFrame or 48
 
 		for record in buoyantRecords do
 			local sim = record.sim
-			if sim and record.state == "Buoyant" and now >= (sim.nextUpdateAt or 0) then
-				if budget <= 0 then
-					break
+			if sim and record.state == "Buoyant" then
+				local near = record.nearPlayer == true and nearBudget > 0
+				if near then
+					nearBudget -= 1
+				elseif now < (sim.nextUpdateAt or 0) or budget <= 0 then
+					continue
+				else
+					budget -= 1
 				end
-				budget -= 1
-				applyBuoyancyTarget(record, now)
+				applyBuoyancyTarget(record, now, near, buoyancyConfig)
 			end
 		end
 	end)
@@ -1814,9 +2141,16 @@ function FloatingObjectGenerator.SetCameraState(player: Player, cameraPos: Vecto
 	}
 end
 
--- Clears camera interest for a leaving player. Wire to Players.PlayerRemoving.
+-- Clears camera interest (and any simulated-prop tally) for a leaving player.
+-- Wire to Players.PlayerRemoving.
 function FloatingObjectGenerator.RemovePlayer(player: Player)
 	cameraStates[player] = nil
+	ownedCountByPlayer[player] = nil
+	for record in activeRecords do
+		if record.owner == player then
+			record.owner = nil
+		end
+	end
 end
 
 function FloatingObjectGenerator.GetStats()
@@ -1856,6 +2190,8 @@ function FloatingObjectGenerator.GetStats()
 		MaxRenderedObjects = getStreamingConfig().MaxRenderedObjects or 500,
 		Streaming = streamingLoopRunning,
 		FreshCameras = freshCameras,
+		NearBandStuds = getBuoyancyConfig().NearDistance or 150,
+		ClientOwnedObjects = clientOwnedCount(),
 		Diagnostics = diagnostics,
 	}
 end
@@ -1895,6 +2231,7 @@ function FloatingObjectGenerator.ClearGenerated()
 
 	table.clear(cellCache)
 	table.clear(blockedCellRetryAt)
+	table.clear(ownedCountByPlayer)
 	table.clear(activeRecords)
 	table.clear(buoyantRecords)
 	table.clear(recordsByModel)
