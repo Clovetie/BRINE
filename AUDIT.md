@@ -169,6 +169,23 @@ between `-0.5` and `-0.25` is subtle.
 So one `PRECISE` lookup can call `GetServerTimeNow()` up to **~200 times**.
 Hoist it to a single call at the top of `Lookup`. (This is the #1 cheap win.)
 
+**B-14. `Ship/Client.client.luau:121` drives `AlignPosition.Position` with a
+packed `(0, TargetY, 0)` from `BoatManager.CalculateBuoyancy`.** In
+`Enum.PositionAlignmentMode.OneAttachment` the docs define `Position` as "the
+position to which the constraint should move its `Attachment0`" — a **world**
+point (this is also why the legacy `BodyPosition.Position` it replaced was
+documented as "the target world position"). The ship only needs the Y, so the
+zeroed X/Z become a command to slide the hull to the world origin, serviced out
+of the same `MaxForce` cap as the lift because `ForceLimitMode` defaults to
+`Magnitude`. The throttle `LinearVelocity` masks it while driving; an idle or
+moored boat far from the origin feels the pull. **Fix:** write
+`Vector3.new(Main.Position.X, height.Y, Main.Position.Z)`, and/or use
+`ForceLimitMode.PerAxis` + `ForceRelativeTo.World` with
+`MaxAxesForce = (0, lift, 0)` so buoyancy has no horizontal authority at all —
+which is what `FloatingObjectGenerator`/`WaveFloat` do for the 500 props.
+Left unfixed here on purpose: the ship is the author's working code and this
+file records, not rewrites.
+
 **B-9. `VertexPositionToId` keyed by `Vector3` — fragile float keys.**
 `Setup` stores `VertexPositionToId[Position]` and `HeightLookup` reads it to get a
 vertex id from a `Vector3`. Vector3 hashes are computed from float bits; two
@@ -337,6 +354,12 @@ this, the ship floats on a constant −1 and the ocean is uncolored/unrendered.
 - `settings.DEBUG = false` for production.
 - Hoist `GetServerTimeNow()`.
 - `Octree` radius→size fix.
+- Ship buoyancy goal: keep the hull's own X/Z instead of `Vector3.new(0, Y, 0)`
+  (B-14). Done for floating objects via `WaveFloat`; still open for the boat.
+- Floating-object buoyancy no longer samples `GetApproximateHeight` (`FAST`)
+  and no longer skips the sample rig for small props — both were visible as
+  props bobbing out of phase with the water and sitting dead level (fixed with
+  `ReplicatedStorage/FloatingObjectGeneration/WaveFloat.luau`).
 
 ### C. Hot-path performance
 - Ship buoyancy: use `FAST` (analytic) distance-culled; high detail only near the
