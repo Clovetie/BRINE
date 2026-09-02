@@ -9,6 +9,7 @@
 // By default it checks the folders used by the new scripts:
 //   src/ReplicatedStorage/HandHolding
 //   src/ReplicatedStorage/IslandGeneration
+//   src/ReplicatedStorage/FloatingObjectGeneration
 //   src/ReplicatedStorage/Gerstner/Helper.luau
 //   src/ReplicatedStorage/Gerstner/Serial/ZoneManager
 //   src/ServerScriptService
@@ -36,6 +37,7 @@ const root = path.resolve(__dirname, "..", "src");
 const DEFAULT_ROOTS = [
 	path.join(root, "ReplicatedStorage", "HandHolding"),
 	path.join(root, "ReplicatedStorage", "IslandGeneration"),
+	path.join(root, "ReplicatedStorage", "FloatingObjectGeneration"),
 	path.join(root, "ReplicatedStorage", "Gerstner", "Helper.luau"),
 	path.join(root, "ReplicatedStorage", "Gerstner", "Serial", "ZoneManager"),
 	path.join(root, "ServerScriptService"),
@@ -135,6 +137,13 @@ function stripLuauCasts(source) {
 			//    (including tuple returns like `): (number, boolean)`). Do not
 			//    run this on method-call chains such as `Signal:Connect(...)`.
 			if (/^\s*(?:local\s+)?function\b/.test(s)) {
+				s = s.replace(/\)\s*:\s*.*$/, ")");
+			}
+			// 1b) Multi-line function head: a line that is only `): Type`
+			//     (the closing paren of the parameter list plus the return
+			//     annotation). A line starting with `)` is never anything
+			//     else in valid code.
+			if (/^\s*\)/.test(s)) {
 				s = s.replace(/\)\s*:\s*.*$/, ")");
 			}
 			// 2) `: <type>` immediately followed by `,` `=` or `)` on the same

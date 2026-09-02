@@ -121,6 +121,11 @@ hierarchy above and are not created by this project:
   [`ISLAND_GENERATION.md`](ISLAND_GENERATION.md).
 - Islands must be `Model`s tagged `Island` with a `Center` part (and an
   optional `Radius` IntValue) for `ZoneManager` to pick them up.
+- `ServerStorage.FloatingObjects` — the unanchored floating-structure
+  templates (`Model`s or single `BasePart`s, any folder nesting, tagged
+  `Small`/`Medium`/`Large`/`Debris`) the floating-object generator streams
+  into `workspace._FloatingObjects` under a hard 500-object render cap. See
+  [`FLOATING_OBJECTS.md`](FLOATING_OBJECTS.md).
 
 Two further things are worth deciding before this runs:
 
