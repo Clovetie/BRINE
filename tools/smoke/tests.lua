@@ -25,6 +25,8 @@ end
 
 BUOY_CALLS = 0
 LOOKUP_CALLS = 0
+GERSTNER_CALLS = 0
+LOOKUP_FAIL = false
 
 -- ---------------------------------------------------------------------------
 -- Mock module graph
@@ -97,12 +99,56 @@ local BoatManagerMock = {
 local HeightLookupMock = {
 	Lookup = function(point)
 		LOOKUP_CALLS += 1
+		if LOOKUP_FAIL then
+			return -1 -- exactly what the real module returns when it cannot resolve
+		end
 		return 25 + math.sin(point.X * 0.01) * 0.9
 	end,
 }
 
+-- Waves shaped like the real Settings.Waves entries (Direction / WaveNumber /
+-- WaveSpeed / WaveAmplitude), so the mock surface actually moves.
+local function mockWave(dx, dz, waveLength, steepness)
+	local waveNumber = 2 * math.pi / waveLength
+	return {
+		Direction = Vector3.new(dx, 0, dz),
+		WaveLength = waveLength,
+		Steepness = steepness,
+		WaveNumber = waveNumber,
+		WaveSpeed = math.sqrt(9.8 / waveNumber),
+		WaveAmplitude = steepness / waveNumber,
+	}
+end
+
+local mockWaves = {
+	mockWave(0.6, 0.05, 24, 0.6),
+	mockWave(0.2, 0.4, 28, 0.4),
+	mockWave(0.15, 0.1, 35, 0.35),
+}
+
+-- Same summed Y as Gerstner.ComputeWave, which is the height the ocean mesh is
+-- displaced with. WaveFloat's ANALYTIC source samples this, so the tests below
+-- exercise a moving wave field instead of a constant.
+local GerstnerMock = {}
+function GerstnerMock.ComputeTransform(waveList, point, t, phaseMulti, speedMulti, amplitudeMulti)
+	GERSTNER_CALLS += 1
+	local y = 0
+	for _, wave in ipairs(waveList) do
+		local k = wave.WaveNumber * (phaseMulti or 1)
+		local c = wave.WaveSpeed * (speedMulti or 1)
+		local a = wave.WaveAmplitude * (amplitudeMulti or 1)
+		local phase = k * (wave.Direction.X * point.X + wave.Direction.Z * point.Z - c * t)
+		y = y + a * math.sin(phase)
+	end
+	return Vector3.new(0, y, 0)
+end
+function GerstnerMock.GetVortexTransform(zone)
+	return Vector3.new(0, -(zone.DownwardForce or 4), 0), Vector3.new(0, 0, 0)
+end
+
 local SettingsMock = {
 	GRID_SETTINGS = { PLANE_OFFSET = Vector3.new(0, 25, 0) },
+	Waves = mockWaves,
 }
 
 -- ---------------------------------------------------------------------------
@@ -173,6 +219,8 @@ local configInst = newInstance("ModuleScript", "FloatingObjectConfig")
 configInst.Parent = fogFolder
 local generatorInst = newInstance("ModuleScript", "FloatingObjectGenerator")
 generatorInst.Parent = fogFolder
+local waveFloatInst = newInstance("ModuleScript", "WaveFloat")
+waveFloatInst.Parent = fogFolder
 local cameraReportInst = newInstance("RemoteEvent", "CameraReport")
 cameraReportInst.Parent = fogFolder
 
@@ -185,6 +233,8 @@ MODULES[heightLookupInst] = { loaded = HeightLookupMock }
 MODULES[boatManagerInst] = { loaded = BoatManagerMock }
 MODULES[zoneManagerInst] = { loaded = ZoneManagerMock }
 MODULES[octreeInst] = { loaded = octreeStub }
+MODULES[gerstner] = { loaded = GerstnerMock }
+MODULES[waveFloatInst] = { source = "WaveFloat" }
 MODULES[configInst] = { source = "FloatingObjectConfig" }
 MODULES[generatorInst] = { source = "FloatingObjectGenerator" }
 
@@ -271,7 +321,10 @@ for _, model in container:GetChildren() do
 end
 check(allTagged, "rendered clones are tagged FloatingObject")
 check(sawAlignTarget, "buoyancy scheduler set AlignPosition.Position")
-check(BUOY_CALLS > 0 or LOOKUP_CALLS > 0, "wave height lookups occurred")
+-- The ANALYTIC source samples the Gerstner surface directly (no mesh, works on
+-- the server too); "MESH" is the opt-in parity path that hits HeightLookup.
+check(GERSTNER_CALLS > 0, "wave heights were sampled from the water surface")
+
 
 -- 3. Camera-based caching: near but unseen -> cached after grace
 local victim = container:GetChildren()[1]
@@ -375,6 +428,243 @@ for _, model in container:GetChildren() do
 end
 check(insideIsland == false, "no object generated inside the island footprint")
 check(nearIslandCount > 0, "objects still generate in open water near the island")
+
+	-- 13. Ship-parity buoyancy rig ------------------------------------------------
+-- Bring the player back so objects near them stay in the sim band.
+rootPart.CFrame = CFrame.new(-900, 25, -900)
+pumpFrames(8)
+
+-- Closest actively-buoyant model to a point, optionally requiring a minimum
+-- bounding-box height. The tall variants matter for the tests below: the mock
+-- has no physics, so a 2-stud plank parked at its spawn height can end up
+-- riding above a wave crest and (correctly) go airborne, which would make
+-- assertions about written goals flaky. A wreck with a 12-stud hull stays
+-- engaged.
+local function buoyantModelNear(pos, minBBoxY)
+	local best, bestDist = nil, math.huge
+	for _, model in container:GetChildren() do
+		local alignPos = model:FindFirstChildWhichIsA("AlignPosition", true)
+		local primary = model.PrimaryPart
+		if alignPos and alignPos.Enabled and primary and primary.Parent then
+			local _, bboxSize = model:GetBoundingBox()
+			if (bboxSize == nil or bboxSize.Y >= (minBBoxY or 0)) then
+				local d = (primary.Position - pos).Magnitude
+				if d < bestDist then
+					bestDist, best = d, model
+				end
+			end
+		end
+	end
+	return best
+end
+
+local rig = buoyantModelNear(rootPart.Position, 6)
+check(rig ~= nil, "a buoyant object is simulating next to a player")
+if rig then
+	-- Park the player on it: the near band and the sim band are both distance
+	-- driven and only re-decided by the streaming cycle, so the cadence and
+	-- goal assertions below need a player actually next to the rig.
+	rootPart.CFrame = CFrame.new(rig.PrimaryPart.Position.X, 25, rig.PrimaryPart.Position.Z)
+	pumpFrames(2)
+end
+local rigHull = rig and rig.PrimaryPart
+local rigAlignPos = rig and rig:FindFirstChildWhichIsA("AlignPosition", true)
+
+if rig and rigHull then
+	local corners = { FloatTopLeft = 0, FloatTopRight = 0, FloatBottomLeft = 0, FloatBottomRight = 0 }
+	local named = {}
+	local moverLocal, waterlineLocal
+	for _, desc in rigHull:GetChildren() do
+		if desc.ClassName == "Attachment" then
+			if corners[desc.Name] ~= nil then
+				corners[desc.Name] += 1
+			end
+			named[desc.Name] = true
+			if desc.Name == "FloatingMover" then
+				moverLocal = desc.CFrame
+			elseif desc.Name == "FloatingWaterline" then
+				waterlineLocal = desc.CFrame
+			end
+		end
+	end
+	check(
+		corners.FloatTopLeft == 1
+			and corners.FloatTopRight == 1
+			and corners.FloatBottomLeft == 1
+			and corners.FloatBottomRight == 1,
+		"buoyant objects are rigged with 4 surface sample attachments (small props included)"
+	)
+	check(named.FloatingWaterline == true, "the rig carries a hull-bottom waterline reference")
+
+	-- Depth must be measured at the BOTTOM of the hull. Measuring it at the
+	-- bounding-box centre (the old behaviour) reads "clear air under the keel"
+	-- on any tall template, which switched the servo off and let the object
+	-- free-fall out of the ocean.
+	local _, rigBBox = rig:GetBoundingBox()
+	check(
+		moverLocal ~= nil
+			and waterlineLocal ~= nil
+			and (moverLocal.Position - waterlineLocal.Position).Magnitude
+			>= (rigBBox and rigBBox.Y or 0) * 0.4,
+		"the waterline reference sits at the hull bottom, not the bbox centre"
+	)
+
+	-- The ship uses per-axis limits so buoyancy cannot act sideways.
+	check(
+		rigAlignPos.ForceLimitMode == Enum.ForceLimitMode.PerAxis
+			and rigAlignPos.ForceRelativeTo == Enum.ActuatorRelativeTo.World,
+		"AlignPosition limits force per world axis"
+	)
+	local axes = rigAlignPos.MaxAxesForce
+	local driftShare = Config.Buoyancy.DriftReturnForce or 0
+	check(
+		axes ~= nil
+			and axes.Y > 0
+			and math.abs(axes.X - axes.Y * driftShare) < 0.01
+			and axes.X == axes.Z
+			and axes.X < axes.Y * 0.5,
+		"buoyancy is vertical-only apart from the small DriftReturnForce share"
+	)
+
+	-- Attitude: the wave field is sloped, so the four corner heights differ and
+	-- the commanded frame must lean off vertical.
+	local tilted = false
+	for _, model in container:GetChildren() do
+		local ao = model:FindFirstChildWhichIsA("AlignOrientation", true)
+		local ap = model:FindFirstChildWhichIsA("AlignPosition", true)
+		if ao and ap and ap.Enabled and ao.CFrame then
+			local up = ao.CFrame.UpVector
+			if up and up.X * up.X + up.Z * up.Z > 1e-6 then
+				tilted = true
+				break
+			end
+		end
+	end
+	check(tilted, "objects are commanded to tilt with the wave slope instead of sitting level")
+
+	-- Analytic sampling: heights come from the Gerstner surface the ocean mesh is
+	-- displaced with, which needs no mesh and works on the server and client.
+	check(GERSTNER_CALLS > 0, "wave heights are sampled from the Gerstner surface")
+end
+
+-- 14. Cadence: near band every frame, everyone else on a shared clock --------
+local function distinctGoals(model, frames)
+	local alignPos = model:FindFirstChildWhichIsA("AlignPosition", true)
+	local seen, count = {}, 0
+	for _ = 1, frames do
+		pumpFrames(1 / 60, 1 / 60)
+		local y = alignPos and alignPos.Position and alignPos.Position.Y
+		if y then
+			local key = string.format("%.6f", y)
+			if not seen[key] then
+				seen[key] = true
+				count += 1
+			end
+		end
+	end
+	return count
+end
+
+if rig then
+	local nearCount = distinctGoals(rig, 30) -- 0.5 s at 60 fps, near band armed
+	Config.Buoyancy.NearDistance = 0
+	pumpFrames(2) -- the streaming cycle re-decides the band, not the float loop
+	local pacedCount = distinctGoals(rig, 30) -- same object, staggered clock only
+	Config.Buoyancy.NearDistance = 150
+	pumpFrames(2)
+	check(
+		nearCount >= 20,
+		"objects inside NearDistance get a fresh goal every frame (got " .. tostring(nearCount) .. "/30)"
+	)
+	check(
+		pacedCount * 3 < nearCount,
+		"everything else rides the staggered UpdateInterval clock (got "
+			.. tostring(pacedCount)
+			.. "/30)"
+	)
+end
+
+-- 15. Drift return: the XZ goal is the prop's own patch of ocean -------------
+if rigAlignPos and rigHull then
+	local drift = Config.Buoyancy.DriftReturnForce
+	pumpFrames(0.3)
+	local heldX = rigAlignPos.Position.X
+	rigHull.CFrame = CFrame.new(rigHull.Position + Vector3.new(60, 0, 0)) -- shove it
+	pumpFrames(0.3)
+	check(
+		math.abs(rigAlignPos.Position.X - heldX) < 0.5,
+		"a pushed object is still driven back toward its own column"
+	)
+	Config.Buoyancy.DriftReturnForce = 0
+	pumpFrames(0.3)
+	local freeAxes = rigAlignPos.MaxAxesForce
+	check(
+		freeAxes.X == 0 and freeAxes.Z == 0,
+		"DriftReturnForce = 0 leaves the servo no horizontal authority at all"
+	)
+	check(
+		math.abs(rigAlignPos.Position.X - heldX) > 5,
+		"with drift return off, the goal tracks the pushed object instead of home"
+	)
+	Config.Buoyancy.DriftReturnForce = drift
+	rigHull.CFrame = CFrame.new(rigHull.Position - Vector3.new(60, 0, 0))
+	pumpFrames(0.3)
+end
+
+-- 16. MESH height source, and what a failed lookup must NOT do --------------
+if rig then
+	local lookupBefore = LOOKUP_CALLS
+	Config.Buoyancy.HeightSource = "MESH"
+	pumpFrames(0.5)
+	check(
+		LOOKUP_CALLS > lookupBefore,
+		"HeightSource=MESH samples HeightLookup exactly like the ship does"
+	)
+	local alignPos = rig:FindFirstChildWhichIsA("AlignPosition", true)
+	local wasEnabled = alignPos.Enabled
+	local lastGoal = alignPos.Position
+	LOOKUP_FAIL = true
+	pumpFrames(0.5)
+	check(
+		alignPos.Enabled == wasEnabled
+			and alignPos.Position.X == lastGoal.X
+			and alignPos.Position.Y == lastGoal.Y,
+		"a failed mesh lookup keeps the previous goal instead of dropping the object"
+	)
+	LOOKUP_FAIL = false
+	Config.Buoyancy.HeightSource = "ANALYTIC"
+	pumpFrames(0.5)
+	check(alignPos.Enabled, "the object is still riding the wave after the lookup recovered")
+end
+
+-- 17. Network ownership is opt-in, capped, and released ---------------------
+if rigHull then
+	check(rigHull.NetworkOwner == nil, 'default Buoyancy.Ownership = "Server" keeps ownership')
+	Config.Buoyancy.Ownership = "NearestPlayer"
+	pumpFrames(3)
+	local owned = 0
+	for _, model in container:GetChildren() do
+		local primary = model.PrimaryPart
+		if primary and primary.NetworkOwner ~= nil then
+			owned += 1
+		end
+	end
+	check(owned > 0, "Ownership=NearestPlayer hands nearby props to the closest client")
+	check(
+		owned <= (Config.Buoyancy.MaxOwnedPerPlayer or 64),
+		"per-player ownership respects MaxOwnedPerPlayer (owned " .. tostring(owned) .. ")"
+	)
+	Config.Buoyancy.Ownership = "Server"
+	pumpFrames(3)
+	local stillOwned = 0
+	for _, model in container:GetChildren() do
+		local primary = model.PrimaryPart
+		if primary and primary.NetworkOwner ~= nil then
+			stillOwned += 1
+		end
+	end
+	check(stillOwned == 0, "switching back to the server releases every owned assembly")
+end
 
 print(("SUMMARY passed=%d failed=%d buoyCalls=%d lookups=%d"):format(TESTS.passed, TESTS.failed, BUOY_CALLS, LOOKUP_CALLS))
 

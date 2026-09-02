@@ -100,7 +100,25 @@ alignOrientation.CFrame = CFrame.fromEulerAnglesXYZ(0, CurrentRotation, 0) * Ori
 ```
 
 `AlignPosition.Position` and `AlignOrientation.CFrame` are world-space goals in
-one-attachment mode. Do not leave the old BodyMovers enabled alongside these
+one-attachment mode. That has a consequence for the buoyancy line above:
+`BoatManager.CalculateBuoyancy` returns the water target as
+`Vector3.new(0, TargetY, 0)`, and only its **Y** is meaningful. Feeding that
+straight in tells the constraint to move the boat to world X=0, Z=0 as well —
+with `ForceLimitMode.Magnitude` (the default) the horizontal error is serviced
+out of the same `MaxForce` budget as the lift, so an idle boat far from the
+origin is dragged toward it. Write the goal from the hull instead:
+
+```lua
+local height, orientation, depth = BoatManager.CalculateBuoyancy(...)
+alignPosition.Position = Vector3.new(Main.Position.X, height.Y, Main.Position.Z)
+```
+
+or keep the packed vector and take the horizontal authority away entirely with
+`ForceLimitMode.PerAxis` + `ForceRelativeTo.World` +
+`MaxAxesForce = Vector3.new(0, lift, 0)`. Both are what
+`ReplicatedStorage/FloatingObjectGeneration/WaveFloat.luau` does for every
+generated prop, along with the per-frame refresh near players — the prop side
+and the boat side are meant to move identically. Do not leave the old BodyMovers enabled alongside these
 constraints, or the two controllers will fight.
 
 The collision-group section is important: clamping the buoyancy goal alone does

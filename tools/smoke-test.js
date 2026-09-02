@@ -170,6 +170,10 @@ function read(p) {
 const tMocks = transformLuau(read("tools/smoke/roblox-mocks.lua"), "mocks");
 const tTests = transformLuau(read("tools/smoke/tests.lua"), "tests");
 const tConfig = transformLuau(read("src/ReplicatedStorage/FloatingObjectGeneration/FloatingObjectConfig.luau"), "config");
+const tWaveFloat = transformLuau(
+	read("src/ReplicatedStorage/FloatingObjectGeneration/WaveFloat.luau"),
+	"wavefloat"
+);
 const tGenerator = transformLuau(
 	read("src/ReplicatedStorage/FloatingObjectGeneration/FloatingObjectGenerator.luau"),
 	"generator"
@@ -177,6 +181,7 @@ const tGenerator = transformLuau(
 
 if (process.argv.includes("--debug-transform")) {
 	fs.writeFileSync("/tmp/gen-transformed.lua", tGenerator);
+	fs.writeFileSync("/tmp/wavefloat-transformed.lua", tWaveFloat);
 	fs.writeFileSync("/tmp/config-transformed.lua", tConfig);
 	fs.writeFileSync("/tmp/mocks-transformed.lua", tMocks);
 	fs.writeFileSync("/tmp/tests-transformed.lua", tTests);
@@ -188,6 +193,7 @@ const bundle = [
 	tMocks,
 	"SOURCES = {",
 	`  FloatingObjectConfig = ${luaLongString(4, tConfig)},`,
+	`  WaveFloat = ${luaLongString(4, tWaveFloat)},`,
 	`  FloatingObjectGenerator = ${luaLongString(4, tGenerator)},`,
 	"}",
 	tTests,

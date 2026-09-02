@@ -150,6 +150,10 @@ CFrame.__index = function(self, key)
 		return Vector3.new(self.m[1], self.m[4], self.m[7])
 	elseif key == "YVector" then
 		return Vector3.new(self.m[2], self.m[5], self.m[8])
+	elseif key == "UpVector" then
+		-- Same as VectorToWorldSpace(Vector3.yAxis): second column of the
+		-- row-major basis, exactly like the engine's CFrame.UpVector.
+		return Vector3.new(self.m[2], self.m[5], self.m[8])
 	end
 	return CFrame[key]
 end
@@ -159,13 +163,21 @@ end
 local function cfFromMatrix(p, m)
 	return setmetatable({ p = p, m = m }, CFrame)
 end
+-- Row-major 3x3 product: m[i*3+j] is row i, column j, and the basis vectors
+-- are the COLUMNS (XVector = m[1],m[4],m[7]) exactly like CFrame. A*B must be
+-- the plain product, because `CFrame.__mul` already applies `a.m` (untransposed)
+-- to b.p for the translation - transposing here would make
+-- `parent.CFrame * att.CFrame:ToObjectSpace(world)` fail to round-trip, which
+-- silently broke every attachment-offset assertion in the tests.
 local function matrixMul(a, b)
 	local out = {}
-	for col = 0, 2 do
-		for row = 0, 2 do
-			out[col * 3 + row + 1] = a[1 * row + 1] * b[col * 3 + 1]
-				+ a[2 * row + 1] * b[col * 3 + 2]
-				+ a[3 * row + 1] * b[col * 3 + 3]
+	for row = 0, 2 do
+		for col = 0, 2 do
+			local sum = 0
+			for k = 0, 2 do
+				sum += a[row * 3 + k + 1] * b[k * 3 + col + 1]
+			end
+			out[row * 3 + col + 1] = sum
 		end
 	end
 	return out
@@ -209,6 +221,13 @@ CFrame.fromEulerAnglesXYZ = CFrame.Angles
 CFrame.fromEulerAnglesYXZ = CFrame.Angles
 function CFrame:ToObjectSpace(other)
 	return cfInverse(self) * other
+end
+function CFrame:VectorToWorldSpace(v)
+	return Vector3.new(
+		self.m[1] * v.X + self.m[2] * v.Y + self.m[3] * v.Z,
+		self.m[4] * v.X + self.m[5] * v.Y + self.m[6] * v.Z,
+		self.m[7] * v.X + self.m[8] * v.Y + self.m[9] * v.Z
+	)
 end
 function CFrame:Inverse()
 	return cfInverse(self)
@@ -325,6 +344,15 @@ InstanceMT.__index = function(self, key)
 		return sig
 	end
 	if key == "Position" then
+		local cframe = rawget(self, "CFrame")
+		if cframe then
+			return cframe.Position
+		end
+		return nil
+	end
+	if key == "AssemblyCenterOfMass" or key == "CenterOfMass" then
+		-- Real Roblox derives these from the assembly; here the hull position
+		-- is the honest stand-in (it is what the buoyancy drag term reads).
 		local cframe = rawget(self, "CFrame")
 		if cframe then
 			return cframe.Position
@@ -617,9 +645,18 @@ end
 
 -- BasePart helpers ------------------------------------------------------------
 function InstanceMT:CanSetNetworkOwnership()
-	return not rawget(self, "_destroyed")
+	return not rawget(self, "_destroyed") and not rawget(self, "Anchored")
 end
-function InstanceMT:SetNetworkOwner() end
+function InstanceMT:SetNetworkOwner(owner)
+	if rawget(self, "Anchored") then
+		error("SetNetworkOwner: part is anchored", 0)
+	end
+	rawset(self, "NetworkOwner", owner)
+	NETWORK_OWNER_CALLS = (NETWORK_OWNER_CALLS or 0) + 1
+end
+function InstanceMT:GetNetworkOwner()
+	return rawget(self, "NetworkOwner")
+end
 
 -- ----------------------------------------------------------------------------
 -- Services

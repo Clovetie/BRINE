@@ -42,7 +42,8 @@ improvement · ⚪ P3 = nice-to-have.
 | 2.1 | 🟡 Distance-cull the boat's buoyancy sampling: use `HeightLookup.FAST` (analytic) when far, `PRECISE` only when near/special | 4× `PRECISE` per frame is the largest recurring cost. | M | Med | Ship follows waves accurately near the camera and cheaply far away; no visible pop. |
 | 2.2 | 🟡 Cache/tune `maxForce`, `AssemblyMass`, and mover constants; recompute if the ship's mass changes | Values are read once; ship mass changes are ignored. | S | Low | Mover forces track ship mass at runtime. |
 | 2.3 | 🟡 Reduce `SetupSecondaryPlanes` tile count or make it configurable | 8 identical replicated planes is a big replication/memory cost. | M | Med | Configurable tile count; acceptable visuals at lower counts. |
-| 2.4 | ⚪ Add a `HeightLookup` analytic fast-path (single Gerstner call) for the boat center, with gradient-based pitch/roll | Cheaper than 4 mesh lookups; still smooth. | L | Med | Smooth, cheap buoyancy with minimal visual regression. |
+| 2.4 | 🟡 Share the buoyancy solver: promote it to `ReplicatedStorage.FloatingObjectGeneration/WaveFloat.luau` and use it for the boat too | **Done for floaters** (2026-09): `WaveFloat.Solve` is the analytic-surface + 4-attachment model the 500 props ride, and `BoatManager.CalculateBuoyancy` is now the odd one out (4× `PRECISE` every frame, packed `(0, TargetY, 0)` goal). Porting the ship onto `WaveFloat` deletes a second implementation of the same physics. | M | Med | Ship and props call the same solver; `BoatManager` becomes a thin adapter or retires. |
+| 2.5 | 🟠 Fix the ship's `AlignPosition.Position = Vector3.new(0, TargetY, 0)` goal (`Ship/Client.client.luau:121`) | In `OneAttachment` mode `Position` is the world point `Attachment0` is moved to, so the goal pins the boat's X/Z to the world origin. With the default `ForceLimitMode.Magnitude` the horizontal error is serviced out of the *same* `MaxForce` budget as the lift: far from the origin an idle boat is dragged toward it (and gets weaker buoyancy in the bargain). Floaters already avoid this (world X/Z come from the object, `PerAxis` limits keep lift and drift separate). | S | Low | Idle boat stays where the water leaves it; buoyancy force does not vary with distance from the origin. |
 
 ---
 
@@ -124,9 +125,11 @@ releases). See [`tools/README.md`](tools/README.md).
   Affects Phase 0.2 scope.
 - **What island count / world size is the target?** Drives Phase 4 tuning
   (`MaxRenderedIslands`, generation radius, tile count) and Phase 5 budgets.
-- **Is the ship the only floater, or are there plans for more?** If more, the
-  buoyancy API should be promoted to a reusable "float" module (Phase 2.4 becomes
-  higher priority).
+- **Is the ship the only floater, or are there plans for more?** Answered for
+  props: `FloatingObjectGeneration/WaveFloat.luau` is the reusable "float" module
+  (analytic surface + 4 hull attachments + the ship's drag/airborne model), and
+  every buoyant object uses it. The open question is the reverse — whether the
+  ship should be moved *onto* it (Phase 2.4) so there is one motion model.
 
 ---
 
