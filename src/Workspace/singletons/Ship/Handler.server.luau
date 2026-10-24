@@ -11,6 +11,19 @@ local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
 Ship:WaitForChild("Main")
 VehicleSeat:SetNetworkOwner(nil)
 
+-- An empty ship is anchored so it cannot free-fall past the kill plane (the
+-- boat used to fall out of the world about 2 s after play started unless
+-- someone sat in it; ROADMAP 2.6). It is unanchored when a player boards and
+-- re-anchored when the seat empties.
+local function setShipAnchored(anchored: boolean)
+	for _, instance in ipairs(Ship:GetDescendants()) do
+		if instance:IsA("BasePart") then
+			instance.Anchored = anchored
+		end
+	end
+end
+setShipAnchored(VehicleSeat.Occupant == nil)
+
 local function registerCollisionGroup(name: string)
 	pcall(function()
 		PhysicsService:RegisterCollisionGroup(name)
@@ -67,6 +80,7 @@ local lastPlayer: Player? = nil
 local function occupantChanged()
 	local occupant = VehicleSeat.Occupant
 	if occupant then
+		setShipAnchored(false)
 		local player = Players:GetPlayerFromCharacter(occupant.Parent)
 		if player then
 			if lastPlayer and lastPlayer ~= player then
@@ -102,6 +116,7 @@ local function occupantChanged()
 			lastPlayer = nil
 		end
 		VehicleSeat:SetNetworkOwner(nil)
+		setShipAnchored(true)
 	end
 end
 

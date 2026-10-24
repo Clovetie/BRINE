@@ -25,7 +25,11 @@ local buoyancyPoints = {
 local boatWidth = Main.Size.X
 local boatLength = Main.Size.Z
 local baseHeight = Main.Size.Y / 2
-local maxForce = Main.AssemblyMass * workspace.Gravity * 4
+-- Force limits follow the hull's mass at runtime (ROADMAP 2.2). They are
+-- derived in RefreshForceLimits, not read once at startup.
+local maxForce = 0
+local throttleForce = 0
+local lastMass = -1
 
 local moverAttachment = Instance.new("Attachment")
 moverAttachment.Name = "ShipMoverAttachment"
@@ -43,7 +47,6 @@ alignPosition.Attachment0 = moverAttachment
 alignPosition.ApplyAtCenterOfMass = true
 alignPosition.ForceLimitMode = Enum.ForceLimitMode.PerAxis
 alignPosition.ForceRelativeTo = Enum.ActuatorRelativeTo.World
-alignPosition.MaxAxesForce = Vector3.new(0, maxForce, 0)
 alignPosition.MaxVelocity = 80
 alignPosition.Responsiveness = 12
 alignPosition.RigidityEnabled = false
@@ -58,7 +61,6 @@ local alignOrientation = Instance.new("AlignOrientation")
 alignOrientation.Name = "ShipWaveOrientation"
 alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
 alignOrientation.Attachment0 = moverAttachment
-alignOrientation.MaxTorque = Main.AssemblyMass * 5000
 alignOrientation.MaxAngularVelocity = 8
 alignOrientation.Responsiveness = 12
 alignOrientation.RigidityEnabled = false
@@ -75,9 +77,24 @@ linearVelocity.Attachment0 = moverAttachment
 linearVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
 linearVelocity.ForceLimitsEnabled = true
 linearVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
-local throttleForce = Main.AssemblyMass * workspace.Gravity * 3
-linearVelocity.MaxAxesForce = Vector3.new(throttleForce, 0, throttleForce)
 linearVelocity.Parent = VehicleSeat
+
+-- Recomputes every force limit from the current AssemblyMass. Runs at once and then each
+-- frame, but only writes when the mass has changed (the hull mass changes when cargo or
+-- a rider joins the assembly).
+local function RefreshForceLimits()
+	local mass = Main.AssemblyMass
+	if mass == lastMass then
+		return
+	end
+	lastMass = mass
+	maxForce = mass * workspace.Gravity * 4
+	throttleForce = mass * workspace.Gravity * 3
+	alignPosition.MaxAxesForce = Vector3.new(0, maxForce, 0)
+	alignOrientation.MaxTorque = mass * 5000
+	linearVelocity.MaxAxesForce = Vector3.new(throttleForce, 0, throttleForce)
+end
+RefreshForceLimits()
 
 local currentZoneInfo = {
 	SpeedMultiplier = 1,
@@ -95,6 +112,7 @@ local currentRotation = 0
 updateZoneMultipliers()
 
 RunService.PostSimulation:Connect(function(dt)
+	RefreshForceLimits()
 	zoneAccumulated += dt
 
 	local currentZone = currentZoneInfo.CURRENT_ZONE

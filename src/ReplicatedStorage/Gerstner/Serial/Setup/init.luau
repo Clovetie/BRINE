@@ -476,7 +476,10 @@ function Setup.SetupSecondaryPlanes(EM: EditableMesh): { { MeshPart | Vector3 } 
 	end
 
 	local SecondaryPlaneInfo = {}
-	for i = 1, 8 do
+	-- // The tiles are added in order: 1-4 cardinal sides, 5-8 diagonal corners.
+	-- // 8 = full ring (default); 4 leaves the corners open; 0 = main plane only.
+	local TileCount = math.clamp(math.floor(_settings.GRID_SETTINGS.SECONDARY_PLANES or 8), 0, 8)
+	for i = 1, TileCount do
 		local NewSize = EditableMesh:GetSize()
 
 		local Plane = AssetService:CreateMeshPartAsync(Content.fromObject(EditableMesh))

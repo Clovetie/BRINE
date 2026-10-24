@@ -107,6 +107,9 @@ local Settings = {
 
 		PaddingMultiplier = 1,
 		UV_SCALE = 2,
+
+		-- // Secondary ocean tiles, 0-8 (ROADMAP 2.3). 8 = full ring (default).
+		SECONDARY_PLANES = 8,
 	},
 
 	WORKER_COUNT = 6,
