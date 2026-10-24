@@ -1,5 +1,11 @@
 # Boat handler update
 
+> **Status: implemented on `main`.** The buoyancy and mover setup described below live in
+> `src/Workspace/singletons/Ship/Client.client.luau` (the ship client now solves its
+> surface with `ReplicatedStorage.FloatingObjectGeneration.WaveFloat`, and `BoatManager`
+> is a compatibility adapter). The snippets below are kept as the reference for
+> porting a *legacy* BodyMover boat; the repo copy is the source of truth.
+
 The supplied boat client is using `BodyPosition`, `BodyGyro`, and `BodyVelocity`.
 Roblox marks all three legacy BodyMovers as deprecated; the supported replacements
 are `AlignPosition`, `AlignOrientation`, and `LinearVelocity` respectively.

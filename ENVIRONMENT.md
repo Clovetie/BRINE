@@ -51,7 +51,7 @@ DataModel
 │   │   ├── Types.luau                       → Types (ModuleScript) — type defs
 │   │   ├── Helper.luau                      → Helper (ModuleScript) — frustum / color / depth / UV / island&zone math
 │   │   ├── HeightLookup.luau                → HeightLookup (ModuleScript) — water height query
-│   │   ├── Appearance.luau                  → Appearance (ModuleScript) — PLACEHOLDER for the ocean SurfaceAppearance
+│   │   ├── Appearance.model.json            → Appearance (SurfaceAppearance, grey, no PBR maps yet)
 │   │   ├── Settings/
 │   │   │   ├── init.luau                    → Settings (ModuleScript) — waves + all tuning constants
 │   │   │   └── Seed.model.json              → Seed (IntValue, 0)
@@ -62,7 +62,7 @@ DataModel
 │   │       │   └── ExistingMesh.model.json  → ExistingMesh (MeshPart)
 │   │       └── ZoneManager/
 │   │           ├── init.luau                → ZoneManager — island/zone spatial index + multipliers
-│   │           ├── EditZone.model.json      → EditZone (BindableEvent) — ⚠ should be a RemoteEvent
+│   │           ├── EditZone.model.json      → EditZone (RemoteEvent)
 │   │           └── ZoneUpdated.model.json   → ZoneUpdated (BindableEvent)
 │   ├── HandHolding [Folder]
 │   │   ├── HandHoldingConfig.luau           → config (numbers, server/client shared)
@@ -124,7 +124,7 @@ the host.
 | `workspace.GlobalWind` | `Settings.BrownianMotionWaves` | Vector3Value/part with `.Unit` | If `BrownianMotionWaves` is enabled and this is missing, `.Unit` errors. (Currently the `BrownianMotionWaves` line is commented out; a hardcoded wave table is used instead.) |
 | `ServerStorage.Islands` | `IslandGenerator` | Folder of biome folders containing island `Model`s | Generator warns and no-ops; no islands placed. |
 | `Workspace.singletons.Ship` | Ship scripts | Model with `Main`, `VehicleSeat`, `Client`, and `Main.TopLeft/TopRight/BottomLeft/BottomRight` attachments | Ship fails to drive. |
-| `ReplicatedStorage.Gerstner.Appearance` | `Setup` | **Real** `SurfaceAppearance` (PBR ocean maps). **Currently a placeholder ModuleScript.** | Ocean planes use `Granite` material with no ocean PBR; `Setup` clones it onto every plane regardless. |
+| `ReplicatedStorage.Gerstner.Appearance` | `Setup` | `SurfaceAppearance` model (grey, no PBR maps). Synced to the live place. | Ocean planes have no PBR maps; `Setup` clones it onto every plane. |
 
 > ⚠ **Two known gaps from `README.md`, confirmed by this audit:**
 > `Appearance` is a placeholder (must be replaced with a `SurfaceAppearance`),
@@ -416,7 +416,7 @@ The central question everything orbits is **"where is the water surface?"**
 
 - **No RemoteEvents needed** for the ocean (it's modular math/modules). The only
   RemoteEvent in the repo is `HandHoldingEvent`.
-- `EditZone` **should** be a RemoteEvent (currently mislabeled).
+- `EditZone` is a RemoteEvent (fixed, AUDIT B-1).
 - Islands are server-owned and replicate as normal instances; clients never
   generate them.
 - The ship client is spawned server-side into the driver's `PlayerGui` and given
@@ -487,8 +487,8 @@ library-only today. Any future work that wants the ocean to actually *render* an
    are "already running."
 6. **Rojo naming rules** — never mix `Foo.luau` + `Foo/`; Folder-with-children
    uses `init.luau`.
-7. **`EditZone` is mislabeled** (BindableEvent used as RemoteEvent) — one-word fix
-   in `EditZone.model.json` (`"BindableEvent"` → `"RemoteEvent"`), see audit.
+7. **`EditZone` is a RemoteEvent** (`EditZone.model.json`). It was mislabeled as a
+   BindableEvent until AUDIT B-1 was fixed; keep it a RemoteEvent.
 8. **`Appearance` placeholder** — `Setup` clones it onto every plane but it's
    currently a ModuleScript `{}` with a `warn`. Replace with a real
    `SurfaceAppearance`.
