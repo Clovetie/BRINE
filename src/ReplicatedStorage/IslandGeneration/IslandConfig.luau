@@ -166,6 +166,10 @@ IslandConfig.Streaming = {
 	-- near-player sink animation is finishing.
 	MaxRenderedIslands = 200,
 
+	-- Cap on cached cell records (ROADMAP 4.1). Only far, never-risen cells are
+	-- evicted; a returning player regenerates them from the same seed.
+	MaxCachedRecords = 3000,
+
 	-- If a boat/prop/baseplate blocks a deterministic candidate, retry later
 	-- instead of permanently burning that cell.
 	ObstacleRetryDelay = 20,

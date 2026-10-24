@@ -646,6 +646,18 @@ local function getRecordLifetime(record, rng: Random?): number
 	return Random.new(getCellSeed(record.cx or 0, record.cz or 0) + 17):NextNumber(minLifetime, maxLifetime)
 end
 
+-- Drops the given records from allGeneratedRecords in one pass (ROADMAP 4.1).
+local function removeGeneratedRecords(removed: { [any]: boolean })
+	local kept = {}
+	for _, record in allGeneratedRecords do
+		if not removed[record] then
+			table.insert(kept, record)
+		end
+	end
+	table.clear(allGeneratedRecords)
+	table.move(kept, 1, #kept, 1, allGeneratedRecords)
+end
+
 local function destroyRecordModel(record, permanent: boolean, cooldownSeconds: number?)
 	cleanupPivotTween(activeRiseTweens, record)
 	cleanupPivotTween(activeSinkTweens, record)
@@ -674,6 +686,13 @@ local function destroyRecordModel(record, permanent: boolean, cooldownSeconds: n
 			islandOctree:RemoveNode(record.node)
 			record.node = nil
 		end
+		-- ROADMAP 4.1: a permanently despawned cell keeps only its "no island"
+		-- marker. The record is dropped, so expired islands do not pile up for the
+		-- whole session. The cell still never regenerates.
+		if record.key and cellCache[record.key] == record then
+			cellCache[record.key] = NO_ISLAND
+		end
+		removeGeneratedRecords({ [record] = true })
 	else
 		record.state = "Cached"
 		record.cullCooldownUntil = getNow() + (cooldownSeconds or 0)
@@ -1127,11 +1146,62 @@ local function updateLifetimeDespawns()
 	end
 end
 
+-- Caps the cached cell records (ROADMAP 4.1). Only cells that are far from every
+-- player and not rising/rendered are evicted, least-recently-touched first. An
+-- evicted cell is generated again from its seed if a player returns. Cells within
+-- 1.5x GenerationRadius are never evicted.
+local function pruneCachedRecords()
+	local streamingConfig = getStreamingConfig()
+	local cap = streamingConfig.MaxCachedRecords or 3000
+	local total = #allGeneratedRecords
+	if total <= cap then
+		return
+	end
+
+	local keepRadius = (streamingConfig.GenerationRadius or Config.Placement.WorldRadius) * 1.5
+	local keepDistSq = keepRadius * keepRadius
+
+	local candidates = {}
+	for _, record in allGeneratedRecords do
+		if
+			record.key
+			and record.state == "Cached"
+			and record.model == nil
+			and not record.permanentlyDespawned
+			and distanceSqToNearestPlayer(record.centerPos) > keepDistSq
+		then
+			table.insert(candidates, record)
+		end
+	end
+	table.sort(candidates, function(a, b)
+		return (a.lastTouched or 0) < (b.lastTouched or 0)
+	end)
+
+	local count = math.min(total - cap, #candidates)
+	local removed = {}
+	for i = 1, count do
+		local record = candidates[i]
+		if cellCache[record.key] == record then
+			cellCache[record.key] = nil
+		end
+		blockedCellRetryAt[record.key] = nil
+		if record.node then
+			islandOctree:RemoveNode(record.node)
+			record.node = nil
+		end
+		removed[record] = true
+	end
+	if count > 0 then
+		removeGeneratedRecords(removed)
+	end
+end
+
 local function streamingStep()
 	generateCellsAroundPlayers()
 	activateRecordsAroundPlayers()
 	updateLifetimeDespawns()
 	enforceRenderedLimit(0)
+	pruneCachedRecords()
 end
 
 local function startStreamingLoop()
