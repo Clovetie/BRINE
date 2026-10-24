@@ -123,8 +123,9 @@ IslandConfig.Placement = {
 	-- player does not permanently block a deterministic cached cell.
 	ObstaclePadding = 8,
 
-	-- Estimate of the largest possible premade island radius, used to widen the
-	-- octree overlap search so a big neighbour is never missed.
+	-- Octree overlap search reach (ROADMAP 4.2). Footprints up to this radius are
+	-- found by the octree; wider ones are checked directly, so no neighbour is
+	-- missed (premade islands can declare Radius above this value).
 	MaxIslandRadius = 400,
 
 	-- Anchor every BasePart of a placed island. Premade islands are authored in

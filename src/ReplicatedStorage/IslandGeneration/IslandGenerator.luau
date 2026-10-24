@@ -68,6 +68,25 @@ local IslandGenerator = {}
 -- any user-authored islands already sitting in workspace.Map.
 local islandOctree = OctreeModule.new()
 
+-- ROADMAP 4.2: footprints wider than Placement.MaxIslandRadius are NOT reachable
+-- by the octree search radius, so they are tracked here and checked directly.
+-- Premade islands can declare a Radius above that bound (e.g. 1400), so the
+-- octree alone could miss them.
+local largeFootprints: { [any]: boolean } = {}
+
+local function createFootprint(position: Vector3, object: { [string]: any }): any
+	local node = islandOctree:CreateNode(position, object)
+	if (object.radius or 0) > Config.Placement.MaxIslandRadius then
+		largeFootprints[node] = true
+	end
+	return node
+end
+
+local function removeFootprint(node: any)
+	islandOctree:RemoveNode(node)
+	largeFootprints[node] = nil
+end
+
 -- Cached generation state. cellCache[key] is either an island record table or
 -- NO_ISLAND. nil means the cell has not been evaluated yet.
 local cellCache = {}
@@ -377,21 +396,35 @@ local function hasBlockingObstacle(centerPos: Vector3, radius: number): boolean
 	return #parts > 0
 end
 
+-- True when footprint `node` overlaps a spot of footprint `radius` at `centerPos`.
+-- `ignoredRecord` is skipped only when it is non-nil and equal to the node's record,
+-- so user-authored (seeded) islands with no record still block placement.
+local function isBlockingFootprint(node: any, centerPos: Vector3, radius: number, ignoredRecord: any?): boolean
+	local object = node.Object or {}
+	if ignoredRecord ~= nil and object.record == ignoredRecord then
+		return false
+	end
+	local otherR = object.radius or object.Radius or 0
+	return (node.Position - centerPos).Magnitude < radius + otherR + Config.Placement.SpacingPadding
+end
+
 -- True if `centerPos` (with footprint `radius`) is a safe, non-overlapping spot.
 -- Pass `ignoredRecord` when checking a cached record against the octree that
 -- already contains that same record's footprint node.
 local function isSpotClear(centerPos: Vector3, radius: number, ignoredRecord: any?, checkObstacles: boolean?): boolean
 	local pl = Config.Placement
 
-	-- (1) Island overlap via octree.
+	-- (1) Island overlap. The octree reaches every footprint up to MaxIslandRadius;
+	-- wider footprints (ROADMAP 4.2) are checked directly below.
 	local searchRadius = radius + pl.SpacingPadding + pl.MaxIslandRadius
 	for _, node in islandOctree:SearchRadius(centerPos, searchRadius) do
-		local object = node.Object or {}
-		if object.record ~= ignoredRecord then
-			local otherR = object.radius or object.Radius or 0
-			if (node.Position - centerPos).Magnitude < radius + otherR + pl.SpacingPadding then
-				return false
-			end
+		if isBlockingFootprint(node, centerPos, radius, ignoredRecord) then
+			return false
+		end
+	end
+	for node in largeFootprints do
+		if isBlockingFootprint(node, centerPos, radius, ignoredRecord) then
+			return false
 		end
 	end
 
@@ -683,7 +716,7 @@ local function destroyRecordModel(record, permanent: boolean, cooldownSeconds: n
 		record.permanentlyDespawned = true
 		record.despawnedAt = getNow()
 		if record.node then
-			islandOctree:RemoveNode(record.node)
+			removeFootprint(record.node)
 			record.node = nil
 		end
 		-- ROADMAP 4.1: a permanently despawned cell keeps only its "no island"
@@ -917,7 +950,7 @@ local function cacheRecord(record)
 		cellCache[key] = record
 	end
 	table.insert(allGeneratedRecords, record)
-	record.node = islandOctree:CreateNode(Vector3.new(record.centerPos.X, PLANE_Y, record.centerPos.Z), {
+	record.node = createFootprint(Vector3.new(record.centerPos.X, PLANE_Y, record.centerPos.Z), {
 		radius = record.radius,
 		record = record,
 	})
@@ -1020,7 +1053,7 @@ local function seedOctreeFromMap(map: Folder)
 				pos = child:GetPivot().Position
 			end
 			local radius = modelRadius(child)
-			islandOctree:CreateNode(Vector3.new(pos.X, PLANE_Y, pos.Z), {
+			createFootprint(Vector3.new(pos.X, PLANE_Y, pos.Z), {
 				radius = radius,
 				existing = true,
 			})
@@ -1186,7 +1219,7 @@ local function pruneCachedRecords()
 		end
 		blockedCellRetryAt[record.key] = nil
 		if record.node then
-			islandOctree:RemoveNode(record.node)
+			removeFootprint(record.node)
 			record.node = nil
 		end
 		removed[record] = true
@@ -1404,6 +1437,7 @@ function IslandGenerator.ClearGenerated()
 	renderedRecordCount = 0
 
 	islandOctree:ClearAllNodes()
+	table.clear(largeFootprints)
 	mapSeeded = false
 	catalog = nil -- force re-discovery on next Generate
 end
