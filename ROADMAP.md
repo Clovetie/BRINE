@@ -79,9 +79,9 @@ running system.
 
 | # | Item | Effort | Risk | Acceptance |
 | --- | --- | --- | --- | --- |
-| 5.1 | ✅ DONE (repo, not yet in Studio) — `HandHoldingServer` reuses one snapshot table for the Heartbeat loop instead of allocating a new one every frame. Same logic. | S | Low | Same behavior, fewer GC hits. |
-| 5.2 | ⚪ Consider a server-side target-lock re-pick if the original target leaves the cone while holding | S | Low | Smoother UX; current behavior simply force-drops on out-of-range. |
-| 5.3 | ✅ DONE (repo, not yet in Studio) — New `OFFER_COOLDOWN = 1` (seconds) in `HandHoldingConfig`. The server ignores a player's new offer if their previous one started less than that long ago. Accepting an existing offer is never blocked. Not live-tested: the hand-holding server needs two players, and the Studio config is not yet synced (see the repo/Studio config mismatch). | S | Low | Rate-limited offers. |
+| 5.1 | ✅ DONE — `HandHoldingServer` reuses one snapshot table for the Heartbeat loop instead of allocating a new one every frame. Same logic. In Studio; a playtest with no errors. | S | Low | Same behavior, fewer GC hits. |
+| 5.2 | ⛔ WON'T DO (user decision) — Keep the force-drop when the original target leaves the cone. A re-pick would need the client to send a new target. | S | Low | Smoother UX; current behavior simply force-drops on out-of-range. |
+| 5.3 | ✅ DONE — New `OFFER_COOLDOWN = 1` (seconds) in `HandHoldingConfig`. The server ignores a player's new offer if their previous one started less than that long ago. Accepting an existing offer is never blocked. In Studio and loads with no errors. Not live-tested: the cooldown needs two players, and the test harness has one peer. | S | Low | Rate-limited offers. |
 
 ---
 
