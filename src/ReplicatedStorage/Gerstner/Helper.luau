@@ -199,12 +199,12 @@ function Helper.GetVertexColor(TransformY: number, VortexY: number, AlphaTranspa
 	return VertexColor
 end
 
-function Helper.GetVertexTransparency(VertexPosition: Vector3, Array: { [number]: number }, NormalizedDistanceToIsland: number): number
+function Helper.GetVertexTransparency(VertexPosition: Vector3, Array: SharedTable, NormalizedDistanceToIsland: number): number
 	if _settings.DEPTH_ENABLED == false then
 		return 1
 	end
 	-- // alpha 1 = no transparency, alpha 0 = transparent
-	-- // Array is a plain table keyed by HashVector (SharedTable was slower for the same lookups).
+	-- // I would also like to note SharedTable's being way less performant than regular tables, which is very sad
 
 	if NormalizedDistanceToIsland > 0.6 then
 		return 1
@@ -317,7 +317,7 @@ function Helper.HashVector(X: number, Z: number): number
 	-- https://www.beosil.com/download/CollisionDetectionHashing_VMV03.pdf
 
 	-- // Luau numbers are a double-precision (64-bit) floating-point number
-	-- // Keys are nonnegative integers up to 2^32 (the mask below), which plain tables handle fine.
+	-- // However, the SharedTable limit is a nonnegative integer that can only go up to 2^32,
 	-- //	So we'll bitwise AND it to 0xFFFFFFFF to ensure it's positive + stays within the 2^32 range
 	-- //	Overall, we should be able to safely hash vectors in a large range, which is more than enough for our case
 
