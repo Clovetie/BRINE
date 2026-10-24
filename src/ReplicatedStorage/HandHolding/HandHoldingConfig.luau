@@ -31,4 +31,8 @@ return {
 	SPRING_STRENGTH = 1100,
 	PULL_DAMPING = 160,
 	MAX_PULL_FORCE = 4000,
+
+	-- Minimum seconds between one player starting new offers (L presses). Stops
+	-- offer spam. Accepting an existing offer is never blocked.
+	OFFER_COOLDOWN = 1,
 }

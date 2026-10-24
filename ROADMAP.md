@@ -79,9 +79,9 @@ running system.
 
 | # | Item | Effort | Risk | Acceptance |
 | --- | --- | --- | --- | --- |
-| 5.1 | ⚪ Reduce per-heartbeat allocations in `HandHoldingServer` (avoid building a snapshot table each frame; iterate state directly) | S | Low | Same behavior, fewer GC hits. |
+| 5.1 | ✅ DONE (repo, not yet in Studio) — `HandHoldingServer` reuses one snapshot table for the Heartbeat loop instead of allocating a new one every frame. Same logic. | S | Low | Same behavior, fewer GC hits. |
 | 5.2 | ⚪ Consider a server-side target-lock re-pick if the original target leaves the cone while holding | S | Low | Smoother UX; current behavior simply force-drops on out-of-range. |
-| 5.3 | ⚪ Add a config-driven cooldown on re-offer to prevent offer spam | S | Low | Rate-limited offers. |
+| 5.3 | ✅ DONE (repo, not yet in Studio) — New `OFFER_COOLDOWN = 1` (seconds) in `HandHoldingConfig`. The server ignores a player's new offer if their previous one started less than that long ago. Accepting an existing offer is never blocked. Not live-tested: the hand-holding server needs two players, and the Studio config is not yet synced (see the repo/Studio config mismatch). | S | Low | Rate-limited offers. |
 
 ---
 
