@@ -96,6 +96,16 @@ local function RefreshForceLimits()
 end
 RefreshForceLimits()
 
+-- This Client is destroyed when the player leaves. Remove the constraints it made
+-- here, so they cannot keep pushing the hull on this machine after the server
+-- takes over the unmanned ship (ROADMAP 2.6).
+script.Destroying:Connect(function()
+	moverAttachment:Destroy()
+	alignPosition:Destroy()
+	alignOrientation:Destroy()
+	linearVelocity:Destroy()
+end)
+
 local currentZoneInfo = {
 	SpeedMultiplier = 1,
 	PhaseMultiplier = 1,

@@ -2,27 +2,18 @@
 --!strict
 --!optimize 2
 
--- Ship singleton. The model must contain Main, VehicleSeat, and Client.
+-- Ship singleton (server side). The model must contain Main, VehicleSeat, and Client.
 local Ship = script.Parent :: Model
 local Players = game:GetService("Players")
 local PhysicsService = game:GetService("PhysicsService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local WaveFloat = require(ReplicatedStorage.FloatingObjectGeneration.WaveFloat)
+local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
 
 local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
-Ship:WaitForChild("Main")
+local Main = Ship:WaitForChild("Main") :: BasePart
 VehicleSeat:SetNetworkOwner(nil)
-
--- An empty ship is anchored so it cannot free-fall past the kill plane (the
--- boat used to fall out of the world about 2 s after play started unless
--- someone sat in it; ROADMAP 2.6). It is unanchored when a player boards and
--- re-anchored when the seat empties.
-local function setShipAnchored(anchored: boolean)
-	for _, instance in ipairs(Ship:GetDescendants()) do
-		if instance:IsA("BasePart") then
-			instance.Anchored = anchored
-		end
-	end
-end
-setShipAnchored(VehicleSeat.Occupant == nil)
 
 local function registerCollisionGroup(name: string)
 	pcall(function()
@@ -75,12 +66,153 @@ for _, instance in ipairs(Ship:GetDescendants()) do
 	end
 end
 
+-- Unmanned buoyancy (ROADMAP 2.6). While the seat is empty the server floats the
+-- hull with the same solver the Client uses, so an empty ship stays on the water
+-- instead of falling out of the world. The Client takes over when someone boards.
+local buoyancyPoints = {
+	Main:WaitForChild("TopLeft") :: Attachment,
+	Main:WaitForChild("TopRight") :: Attachment,
+	Main:WaitForChild("BottomLeft") :: Attachment,
+	Main:WaitForChild("BottomRight") :: Attachment,
+}
+local boatWidth = Main.Size.X
+local boatLength = Main.Size.Z
+local baseHeight = Main.Size.Y / 2
+
+local moverAttachment = Instance.new("Attachment")
+moverAttachment.Name = "UnmannedMover"
+moverAttachment.Parent = VehicleSeat
+
+local buoyancy = Instance.new("AlignPosition")
+buoyancy.Name = "UnmannedBuoyancy"
+buoyancy.Mode = Enum.PositionAlignmentMode.OneAttachment
+buoyancy.Attachment0 = moverAttachment
+buoyancy.ApplyAtCenterOfMass = true
+buoyancy.ForceLimitMode = Enum.ForceLimitMode.PerAxis
+buoyancy.ForceRelativeTo = Enum.ActuatorRelativeTo.World
+buoyancy.MaxVelocity = 80
+buoyancy.Responsiveness = 12
+buoyancy.RigidityEnabled = false
+buoyancy.MaxAxesForce = Vector3.zero
+buoyancy.Position = moverAttachment.WorldPosition
+buoyancy.Enabled = false
+buoyancy.Parent = VehicleSeat
+
+local orientation = Instance.new("AlignOrientation")
+orientation.Name = "UnmannedOrientation"
+orientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+orientation.Attachment0 = moverAttachment
+orientation.MaxAngularVelocity = 8
+orientation.Responsiveness = 12
+orientation.RigidityEnabled = false
+orientation.MaxTorque = 0
+orientation.Enabled = false
+orientation.Parent = VehicleSeat
+
+local maxForce = 0
+local lastMass = -1
+
+local function refreshLimits()
+	local mass = Main.AssemblyMass
+	if mass == lastMass then
+		return
+	end
+	lastMass = mass
+	maxForce = mass * workspace.Gravity * 4
+	buoyancy.MaxAxesForce = Vector3.new(0, maxForce, 0)
+	orientation.MaxTorque = mass * 5000
+end
+refreshLimits()
+
+-- Heading is kept while the ship is unmanned: yaw is taken from the hull when the
+-- last player leaves, and the solver's pitch/roll is composed in front of it.
+local function headingOf(seat: VehicleSeat): number
+	local look = seat.CFrame.LookVector
+	return math.atan2(-look.X, -look.Z)
+end
+local heading = headingOf(VehicleSeat)
+
+local zoneInfo = {
+	SpeedMultiplier = 1,
+	PhaseMultiplier = 1,
+	AmplitudeMultiplier = 1,
+	CURRENT_ZONE = nil :: any,
+}
+
+local function updateZoneParameters()
+	zoneInfo.CURRENT_ZONE = ZoneManager:GetZoneParameters(Main.Position)
+end
+updateZoneParameters()
+local zoneAccumulated = 0
+
+local unmanned = false
+local function setUnmanned(active: boolean)
+	unmanned = active
+	buoyancy.Enabled = active
+	orientation.Enabled = active
+end
+
+RunService.PostSimulation:Connect(function(dt)
+	if VehicleSeat.Occupant ~= nil then
+		if unmanned then
+			setUnmanned(false)
+		end
+		return
+	end
+	if not unmanned then
+		setUnmanned(true)
+	end
+
+	refreshLimits()
+	zoneAccumulated += dt
+	local currentZone = zoneInfo.CURRENT_ZONE
+	if currentZone and currentZone.Type ~= "Whirlpool" then
+		if currentZone.Link then
+			zoneInfo.PhaseMultiplier, zoneInfo.SpeedMultiplier, zoneInfo.AmplitudeMultiplier =
+				ZoneManager:GetZoneMultipliers(Main.Position, currentZone.Link.Position, currentZone)
+		elseif currentZone.Island then
+			local radius = currentZone.Radius / 2
+			zoneInfo.PhaseMultiplier, zoneInfo.SpeedMultiplier, zoneInfo.AmplitudeMultiplier =
+				ZoneManager:GetIslandMultipliers(Main.Position, currentZone.Island.Center.Position, radius)
+		end
+	end
+
+	local targetY, pose, depth = WaveFloat.Solve(
+		buoyancyPoints,
+		Main.CenterOfMass.Y,
+		Main.Center.WorldPosition.Y,
+		boatLength,
+		boatWidth,
+		baseHeight,
+		zoneInfo,
+		"ANALYTIC",
+		nil,
+		workspace:GetServerTimeNow()
+	)
+
+	if targetY ~= nil then
+		local here = moverAttachment.WorldPosition
+		buoyancy.Enabled = true
+		buoyancy.MaxAxesForce = Vector3.new(0, maxForce * (1 + depth / 10), 0)
+		buoyancy.Position = Vector3.new(here.X, targetY, here.Z)
+	else
+		-- Airborne: let gravity bring the hull back down.
+		buoyancy.Enabled = false
+	end
+	orientation.CFrame = CFrame.fromEulerAnglesXYZ(0, heading, 0) * pose
+
+	if zoneAccumulated >= 3 then
+		zoneAccumulated = 0
+		updateZoneParameters()
+	end
+end)
+
 local lastPlayer: Player? = nil
 
 local function occupantChanged()
 	local occupant = VehicleSeat.Occupant
 	if occupant then
-		setShipAnchored(false)
+		setUnmanned(false)
 		local player = Players:GetPlayerFromCharacter(occupant.Parent)
 		if player then
 			if lastPlayer and lastPlayer ~= player then
@@ -115,9 +247,16 @@ local function occupantChanged()
 			end
 			lastPlayer = nil
 		end
-		VehicleSeat:SetNetworkOwner(nil)
-		setShipAnchored(true)
+		-- Keep the heading the hull has now, then float it unmanned on the server.
+		heading = headingOf(VehicleSeat)
+		for _, instance in ipairs(Ship:GetDescendants()) do
+			if instance:IsA("BasePart") and instance:CanSetNetworkOwnership() then
+				instance:SetNetworkOwner(nil)
+			end
+		end
+		setUnmanned(true)
 	end
 end
 
 VehicleSeat:GetPropertyChangedSignal("Occupant"):Connect(occupantChanged)
+setUnmanned(VehicleSeat.Occupant == nil)
