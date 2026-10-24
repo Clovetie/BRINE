@@ -78,7 +78,10 @@ DataModel
 │
 ├── StarterPlayer
 │   └── StarterPlayerScripts
-│       └── HandHoldingClient.client.luau    → R15 hand-holding input/target picker
+│       ├── HandHoldingClient.client.luau    → R15 hand-holding input/target picker
+│       └── OceanParallel/                    → ocean renderer (ROADMAP 3.1–3.3)
+│           ├── init.client.luau              → mesh setup, chunk dispatch, ClientInit
+│           └── ParallelWorker.client.luau    → parallel Actor: per-chunk vertex update
 │
 ├── Workspace
 │   ├── singletons/Folder
@@ -213,9 +216,10 @@ this XZ?"** with three accuracy/speed tiers:
 and anything that floats. Boxy: the ship's buoyancy calls it 4×/frame with
 `PRECISE`.
 
-⚠ On the client it requires `ClientInit(...)` to have been called (which sets
-`_PLANE`/`EditableMesh`). In this repo **nothing calls `ClientInit`**, so all
-client-side `PRECISE` lookups return `-1` (see audit §7).
+On the client it requires `ClientInit(...)` to have been called (which sets
+`_PLANE`/`EditableMesh`). The ocean renderer calls it once the mesh exists
+(`StarterPlayerScripts/OceanParallel/init.client.luau`, ROADMAP 3.2). The ship no
+longer uses `PRECISE` at all (ROADMAP 2.4), so this matters only for other callers.
 
 ### 4.5 Setup — `Gerstner/Serial/Setup/init.luau`
 
@@ -235,8 +239,9 @@ client-side `PRECISE` lookups return `-1` (see audit §7).
 **Contribution to the whole:** translates math into an actual visual/collidable
 mesh, and builds the LOD structure other systems rely on.
 
-⚠ These functions have **no in-repo callers** — the ocean renderer/orchestrator
-that drives them is absent (see audit §7).
+These functions are driven by the ocean renderer, `StarterPlayerScripts/OceanParallel/`
+(client LocalScript, with `ParallelWorker.client.luau` as its child Actor script).
+It was live-only before Phase 3 and is now in the repo.
 
 ### 4.6 Octree — `ReplicatedStorage/Octree.luau`
 
@@ -447,12 +452,10 @@ abstractions** and **one question**:
    `GlobalWind`, `Islands`) + tooling.
 
 **The key insight for onboarding:** the repo is **a modular component library for
-an ocean**, not a single self-driving script. The **ocean renderer/orchestrator
-that would call `Setup`, `HeightLookup.ClientInit`, `GetFrustumPlanes`,
-`IsInView`, `GetVertexColor`, `ComputeTransformAndNormal`, and `SET_SETTINGS` is
-not present** in this snapshot. Consequently many of those functions are
-library-only today. Any future work that wants the ocean to actually *render* and
-*bob the ship correctly* must add that orchestrator (or wire `ClientInit`).
+an ocean**, not a single self-driving script. The **ocean renderer/orchestrator**
+is `StarterPlayerScripts/OceanParallel/`. It calls `Setup`, `HeightLookup.ClientInit`,
+`GetFrustumPlanes`, `IsInView`, `GetVertexColor`, `ComputeTransformAndNormal`, and
+`SET_SETTINGS`. It was live-only until Phase 3 sync.
 
 ### 6.1 One-sentence per system (handy cheat-sheet)
 

@@ -17,7 +17,7 @@ improvement · ⚪ P3 = nice-to-have.
 | --- | --- | --- | --- | --- | --- |
 | 0.1 | ✅ DONE — Change `EditZone.model.json` `"BindableEvent"` → `"RemoteEvent"` | `ZoneManager` uses `:FireAllClients`/`.OnClientEvent`; a BindableEvent doesn't have them → runtime error on zone insert. | S | Low (one word + regenerate) | Zone insert no longer errors; client receives zone events. |
 | 0.2 | ✅ DONE — Replace `Gerstner/Appearance.luau` placeholder with a `SurfaceAppearance` model (`Appearance.model.json`, matching the live place: grey, no PBR maps yet) | `Setup` clones it onto every plane; currently ocean renders as flat Granite. | M | Low–Med | Ocean planes show PBR water material; no `warn` at load. |
-| 0.3 | ⏸ DEFERRED to 3.2 — Call `HeightLookup.ClientInit(dict, mesh, plane)` once per client after the ocean mesh exists (no live caller needs it yet; `Workspace.Ocean` is empty) | Without it, client `PRECISE` lookups return `-1`, so the ship doesn't follow waves. | M | Med (needs the driver/mesh) | Ship buoyancy samples real wave heights on the client. |
+| 0.3 | ✅ DONE via 3.2 (`OceanParallel` calls `ClientInit` once the mesh exists) — was DEFERRED to 3.2: Call `HeightLookup.ClientInit(dict, mesh, plane)` once per client after the ocean mesh exists (no live caller needs it yet; `Workspace.Ocean` is empty) | Without it, client `PRECISE` lookups return `-1`, so the ship doesn't follow waves. | M | Med (needs the driver/mesh) | Ship buoyancy samples real wave heights on the client. |
 | 0.4 | ✅ DONE — `Settings` calls `Gerstner.SET_SETTINGS(...)` with its real grid values (Padding 48, Width/Length 40) | Without it, whirlpool UV math divides by zero (`Padding=0`). | S | Low | Whirlpool UV rotation produces finite coordinates. |
 
 ---
@@ -55,11 +55,11 @@ running system.
 
 | # | Item | Effort | Risk | Acceptance |
 | --- | --- | --- | --- | --- |
-| 3.1 | Add an ocean **editor/renderer** script that calls `Setup.SetupEditableMesh()`, `Setup.SubdividePlane(...)`, `Setup.GetPlaneFromEditableMesh(...)`, and `Setup.SetupSecondaryPlanes(...)` | L | Med | Ocean mesh + tiled planes appear in `workspace.Ocean`. |
-| 3.2 | Call `HeightLookup.ClientInit(...)` from that renderer, and `Gerstner.SET_SETTINGS(...)` with grid values | M | Med | Fixes B-3/B-4; ship floats on real heights. |
-| 3.3 | Per-frame vertex/chunk update loop: `Gerstner.ComputeTransformAndNormal` → `Helper.GetVertexColor`/`GetVertexTransparency`/`GetUV`, culled with `Helper.IsInView`/`Helper.IsChunkInView` | L | Med | Ocean animates with correct color/foam/shore/whirlpool effects, culled to the view frustum. |
-| 3.4 | Wire `FRUSTUM_CULLING_FIX` into the culling path if it's still needed | S | Low | The flag is actually consumed. |
-| 3.5 | Centralize the `PLANE_OFFSET` waterline into a single source consumed by `Settings`, `HeightLookup`, `Setup`, `IslandConfig`, `IslandGenerator` | S | Low | Changing waterline updates all consumers consistently. |
+| 3.1 | ✅ DONE — The renderer was already live as `StarterPlayer.StarterPlayerScripts.OceanParallel` (not in the repo). Synced to `src/StarterPlayerScripts/OceanParallel/init.client.luau` + `ParallelWorker.client.luau`. Playtest: `Workspace.Ocean` holds OceanPlane + 8 SecondaryPlanes (1872² studs, Y=25). Was: Add an ocean **editor/renderer** script that calls `Setup.SetupEditableMesh()`, `Setup.SubdividePlane(...)`, `Setup.GetPlaneFromEditableMesh(...)`, and `Setup.SetupSecondaryPlanes(...)` | L | Med | Ocean mesh + tiled planes appear in `workspace.Ocean`. |
+| 3.2 | ✅ DONE — `OceanParallel` calls `HeightLookup.ClientInit(...)`; `Settings` calls `SET_SETTINGS` with the grid values (0.4). Was: Call `HeightLookup.ClientInit(...)` from that renderer, and `Gerstner.SET_SETTINGS(...)` with grid values | M | Med | Fixes B-3/B-4; ship floats on real heights. |
+| 3.3 | ✅ DONE (live, now synced) — chunked parallel worker: frustum culling, LOD lerp, colour/foam, UV scroll, whirlpool and island/zone multipliers. Presence verified in play; wave motion and culling not measured yet. Was: Per-frame vertex/chunk update loop: `Gerstner.ComputeTransformAndNormal` → `Helper.GetVertexColor`/`GetVertexTransparency`/`GetUV`, culled with `Helper.IsInView`/`Helper.IsChunkInView` | L | Med | Ocean animates with correct color/foam/shore/whirlpool effects, culled to the view frustum. |
+| 3.4 | 🟡 OPEN — `FRUSTUM_CULLING_FIX` is consumed (`OceanParallel` creates a Highlight), but that Highlight is created with `Enabled = false`, so it probably does nothing. Needs a decision: enable it and measure, or retire the flag. Was: Wire `FRUSTUM_CULLING_FIX` into the culling path if it's still needed | S | Low | The flag is actually consumed. |
+| 3.5 | ✅ DONE — `Settings.GRID_SETTINGS.PLANE_OFFSET` is the source; `Setup`'s default now reads it too (it was `Vector3.zero`). Other consumers already read Settings. Was: Centralize the `PLANE_OFFSET` waterline into a single source consumed by `Settings`, `HeightLookup`, `Setup`, `IslandConfig`, `IslandGenerator` | S | Low | Changing waterline updates all consumers consistently. |
 
 ---
 

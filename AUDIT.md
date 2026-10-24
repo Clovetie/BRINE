@@ -70,7 +70,7 @@ and `HandHoldingServer` (~591).
 - **Streaming is budgeted** (cells per cycle, yields, cap on rendered islands).
 
 ### Weaknesses / risks
-- **No ocean renderer/orchestrator is present in the repo.** Many core functions
+- **The ocean renderer was missing from the repo (live-only). It is now synced at `StarterPlayerScripts/OceanParallel/` (ROADMAP 3.1–3.3).** Before the sync, many core functions
   (`Setup.SetupEditableMesh`, `Setup.SubdividePlane`,
   `Setup.SetupSecondaryPlanes`, `HeightLookup.ClientInit`, `Gerstner.SET_SETTINGS`,
   `Gerstner.ComputeTransformAndNormal`, `Helper.GetFrustumPlanes`, `Helper.IsInView`,
@@ -116,7 +116,7 @@ material. With no `SurfaceAppearance`, ocean planes fall back to
 `SurfaceAppearance` (normal/roughness/metalness maps) and change the instance type
 from ModuleScript to SurfaceAppearance.
 
-**B-3. `HeightLookup.ClientInit` is never called → client buoyancy is -1.**
+**B-3. `HeightLookup.ClientInit` is never called → client buoyancy is -1.** *(Resolved: the ship moved to `WaveFloat` ANALYTIC in 2.4, and the live renderer calls `ClientInit` (Phase 3).)*
 On the client, `HeightLookup.Lookup` begins with:
 `if _PLANE == nil and IS_SERVER == false then warn(...); return -1`.
 `_PLANE`/`EditableMesh` are only ever set by `ClientInit`, which no module calls

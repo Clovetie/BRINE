@@ -25,6 +25,13 @@
 const fs = require("fs");
 const path = require("path");
 const luaparse = require("luaparse");
+const { execFileSync } = require("child_process");
+
+// The real Luau compiler (shipped in .tools/bin by setup-tools) is the authority when it is present.
+// luaparse is only a fallback: it cannot read nested Luau table types such as
+// `{ [Vector3]: { number } }`, which the Luau compiler and Studio both accept.
+const LUAU_COMPILE = path.resolve(__dirname, "..", ".tools", "bin", "luau-compile");
+const useLuauCompile = fs.existsSync(LUAU_COMPILE);
 
 const root = path.resolve(__dirname, "..", "src");
 // Scope note: luaparse understands Lua 5.1, not Luau-only syntax (generics,
@@ -185,12 +192,17 @@ if (files.length === 0) {
 for (const file of files) {
 	const source = fs.readFileSync(file, "utf8");
 	try {
-		luaparse.parse(stripLuauCasts(source), { luaVersion: "5.1" });
+		if (useLuauCompile) {
+			// Compiling is enough to prove the syntax; the bytecode output is discarded.
+			execFileSync(LUAU_COMPILE, [file], { stdio: ["ignore", "ignore", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+		} else {
+			luaparse.parse(stripLuauCasts(source), { luaVersion: "5.1" });
+		}
 		console.log("OK   ", path.relative(process.cwd(), file));
 	} catch (err) {
 		failures += 1;
 		console.error("FAIL ", path.relative(process.cwd(), file));
-		console.error("     ", err.message);
+		console.error("     ", err.stderr ? String(err.stderr).trim() : err.message);
 	}
 }
 

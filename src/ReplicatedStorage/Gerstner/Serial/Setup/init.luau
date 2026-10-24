@@ -20,7 +20,8 @@ local Setup = {
 		Width = 0,
 		Length = 0,
 		UV_SCALE = 0,
-		PLANE_OFFSET = Vector3.zero,
+		-- // Single source for the waterline: Settings.GRID_SETTINGS.PLANE_OFFSET (ROADMAP 3.5)
+		PLANE_OFFSET = _settings.GRID_SETTINGS.PLANE_OFFSET,
 	},
 	VertexInfo = VertexInfo,
 	VertexPositionToId = {},
