@@ -151,7 +151,6 @@ local Settings = {
 
 	-- // DEBUG
 	-- // Known issues thread: https://devforum.roblox.com/t/client-beta-in-experience-mesh-image-apis-now-available-in-published-experiences/3267293
-	FRUSTUM_CULLING_FIX = true, -- // See known issues #7
 }
 
 -- // Hand the grid to Gerstner so its whirlpool UV math has real values.

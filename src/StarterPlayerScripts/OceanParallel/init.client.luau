@@ -158,11 +158,8 @@ do
 		warn('WARNING: "DEPTH_ENABLED" setting is set to true, which may lead to some render issues.\nSee known issues section in: https://devforum.roblox.com/t/client-beta-in-experience-mesh-image-apis-now-available-in-published-experiences/3267293')
 	end
 	
-	if _settings.FRUSTUM_CULLING_FIX == true then
-		-- // Because of a bounding box issue with ROBLOX's frustum culling, we'll insert a highlight into the ocean plane so that it is rendered
-		-- // at all times. ROBLOX has plans to fix this, but until then, we need to insert a highlight to force rendering.
-		Instance.new('Highlight', Plane).Enabled = false
-	end
+	-- // FRUSTUM_CULLING_FIX retired (ROADMAP 3.4): the Highlight it used to create was
+	-- // born disabled, so it never affected rendering. Enabling it is untested.
 	
 	do
 		-- // Begin creating chunks based off the vertices of the mesh

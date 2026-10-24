@@ -169,8 +169,8 @@ ultimately calls back into this module's math.
   `BrownianMotionWaves()` generator available (commented out).
 - Defines grid settings (chunk size, padding, plane offset, UV scale), render
   distances, LOD subdivisions, island multipliers, wave colors, UV scroll, depth
-  ray length/offset, whitecap height, shore transparency, and the
-  `FRUSTUM_CULLING_FIX` flag.
+  ray length/offset, whitecap height, and shore transparency. (The former
+  `FRUSTUM_CULLING_FIX` flag was retired in ROADMAP 3.4.)
 - **Seed handling:** if `Seed.Value == 0`, it reseeds to a random value and
   writes it back. This makes the world deterministic across restarts once a seed
   is set. `IslandGenerator` reuses this same `Seed` IntValue so ocean and islands
