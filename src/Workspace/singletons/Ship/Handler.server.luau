@@ -35,6 +35,27 @@ if map then
 	map.DescendantAdded:Connect(markIsland)
 end
 
+-- Rising islands are parented to workspace._RisingIslands before they reach
+-- Map (ROADMAP 4.4). Tag them from the moment they appear, so the ship cannot
+-- collide with an island mid-rise.
+local RISING_ISLANDS_FOLDER_NAME = "_RisingIslands"
+local function watchRisingFolder(folder: Instance)
+	for _, instance in ipairs(folder:GetDescendants()) do
+		markIsland(instance)
+	end
+	folder.DescendantAdded:Connect(markIsland)
+end
+
+local risingFolder = workspace:FindFirstChild(RISING_ISLANDS_FOLDER_NAME)
+if risingFolder then
+	watchRisingFolder(risingFolder)
+end
+workspace.ChildAdded:Connect(function(child)
+	if child.Name == RISING_ISLANDS_FOLDER_NAME then
+		watchRisingFolder(child)
+	end
+end)
+
 for _, instance in ipairs(Ship:GetDescendants()) do
 	if instance:IsA("BasePart") then
 		instance.CollisionGroup = "Ship"

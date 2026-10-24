@@ -70,7 +70,7 @@ running system.
 | 4.1 | ⚪ Bound/evict `IslandGenerator.allGeneratedRecords` and `cellCache` (e.g. LRU by last-touched) | These grow for the whole session by design; long servers accumulate. | M | Med | Memory stays bounded across long sessions. |
 | 4.2 | 🟡 Reduce the inflatable octree search radius in `isSpotClear` (`+ MaxIslandRadius`) with a cheaper nearest-neighbor pre-check | Large per-candidate query. | M | Med | Same placement quality, faster validation. |
 | 4.3 | 🟡 Split `IslandGenerator` (1,342 lines) into `discovery`, `placement`, `activation`, `lifecycle` sub-modules | Main engine is large and hard to extend. | L | Low | Each concern is a small, testable module; behavior unchanged. |
-| 4.4 | ⚪ Tag the ship collision group on rising islands before they reach `Map` | Rising islands in `_RisingIslands` can collide with the ship. | S | Low | No ship↔island collision during rise animations. |
+| 4.4 | ✅ DONE — `Ship/Handler.server.luau` now also tags `workspace._RisingIslands` descendants `ShipIsland` (watches the folder, including when it is created later). Verified in a server run: parts added to the folder get `CollisionGroup = ShipIsland`. | Rising islands in `_RisingIslands` can collide with the ship. | S | Low | No ship↔island collision during rise animations. |
 
 ---
 
