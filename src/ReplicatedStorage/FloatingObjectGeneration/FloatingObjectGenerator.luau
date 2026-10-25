@@ -764,8 +764,27 @@ local function applyBuoyancyTarget(record, now: number, near: boolean, buoyancyC
 	-- error at the mover attachment, and the angle between the hull's up axis
 	-- and the goal's.
 	local errorY = 0
+	local signedError = 0
 	if targetY ~= nil then
-		errorY = math.abs(targetY - sim.mover.WorldPosition.Y)
+		signedError = targetY - sim.mover.WorldPosition.Y
+		errorY = math.abs(signedError)
+	end
+
+	-- Integral action (Small and Medium only, IntegralClasses). The servo's goal
+	-- leads the object by about a stud at steady state, so the object rides low
+	-- (floating/NOTES.md). While the object is riding (near, and within
+	-- SettleDistance of its nominal height), the goal is biased by the integral of
+	-- its height error, which drives that error toward zero. The bias is clamped,
+	-- and it is frozen when the object is not riding.
+	local goalY = targetY
+	if targetY ~= nil and sim.integralGain > 0 then
+		local dt = math.min(now - (sim.integralAt or now), 0.25)
+		sim.integralAt = now
+		if near and errorY <= (buoyancyConfig.SettleDistance or 2) then
+			local maxBias = buoyancyConfig.IntegralMaxBias or 1.5
+			sim.integralBias = math.clamp(sim.integralBias + sim.integralGain * signedError * dt, -maxBias, maxBias)
+		end
+		goalY = targetY + sim.integralBias
 	end
 	local settleCos = math.cos(math.rad(buoyancyConfig.SettleAngleDegrees or 15))
 	local soft = not near
@@ -826,7 +845,7 @@ local function applyBuoyancyTarget(record, now: number, near: boolean, buoyancyC
 	if (buoyancyConfig.DriftReturnForce or 0) > 0 then
 		goalX, goalZ = sim.homeX, sim.homeZ
 	end
-	alignPosition.Position = Vector3.new(goalX, targetY, goalZ)
+	alignPosition.Position = Vector3.new(goalX, goalY, goalZ)
 	alignPosition.Enabled = true
 end
 
@@ -1266,6 +1285,9 @@ local function buildSim(record)
 	end
 
 	local moverWorld = mover.WorldPosition
+	-- Integral action on the buoyancy goal, Small and Medium only (see applyBuoyancyTarget).
+	local buoyancyCfg = getBuoyancyConfig()
+	local integralClasses = buoyancyCfg.IntegralClasses or {}
 	record.sim = {
 		mover = mover,
 		waterline = waterline,
@@ -1289,6 +1311,9 @@ local function buildSim(record)
 		verticalOnly = verticalOnly,
 		homeX = moverWorld.X,
 		homeZ = moverWorld.Z,
+		integralGain = integralClasses[record.className] and (buoyancyCfg.IntegralGain or 0) or 0,
+		integralBias = 0,
+		integralAt = nil,
 		yaw = record.yaw or 0,
 		nextUpdateAt = 0,
 		nextZoneAt = 0,

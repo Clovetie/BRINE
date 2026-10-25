@@ -352,6 +352,14 @@ FloatingObjectConfig.Buoyancy = {
 	-- player left them and drift forever.
 	DriftReturnForce = 0.12,
 
+	-- Integral action on the buoyancy goal, Small and Medium only. The servo rides
+	-- about a stud low on average (floating/NOTES.md); this bias removes that error.
+	-- IntegralGain is studs of goal bias per second per stud of mean height error;
+	-- the bias is clamped to IntegralMaxBias studs.
+	IntegralGain = 0.3,
+	IntegralMaxBias = 1.5,
+	IntegralClasses = { Small = true, Medium = true },
+
 	-- Network ownership. "Server" keeps physics authoritative here (determinism
 	-- + exploit resistance; the price is that local players push props with one
 	-- round trip of latency). "NearestPlayer" hands props inside `OwnDistance`
