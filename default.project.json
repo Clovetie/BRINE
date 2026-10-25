@@ -37,6 +37,9 @@
 				},
 				"FloatingObjectsClient": {
 					"$path": "src/StarterPlayerScripts/FloatingObjectsClient.client.luau"
+				},
+				"SwimClient": {
+					"$path": "src/StarterPlayerScripts/SwimClient.client.luau"
 				}
 			}
 		}

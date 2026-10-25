@@ -10,6 +10,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local WaveFloat = require(ReplicatedStorage.FloatingObjectGeneration.WaveFloat)
 local ShipDrive = require(ReplicatedStorage.ShipHandling.ShipDrive)
+local ShipGuard = require(ReplicatedStorage.ShipHandling.ShipGuard)
 local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
 
 local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
@@ -82,6 +83,23 @@ local buoyancyPoints = {
 local boatWidth = Main.Size.X
 local boatLength = Main.Size.Z
 local baseHeight = Main.Size.Y / 2
+
+-- Sea surface under the hull: the mean of the four corner heights, as WaveFloat.Solve
+-- computes its surface. Nil only if every corner lookup failed.
+local function seaSurfaceAt(zone, now: number): number?
+	local sum, count = 0, 0
+	for _, point in buoyancyPoints do
+		local h = WaveFloat.HeightAt(point.WorldPosition, zone, nil, "ANALYTIC", now)
+		if h ~= nil then
+			sum += h
+			count += 1
+		end
+	end
+	if count == 0 then
+		return nil
+	end
+	return sum / count
+end
 
 local moverAttachment = Instance.new("Attachment")
 moverAttachment.Name = "UnmannedMover"
@@ -169,9 +187,9 @@ local function setUnmanned(active: boolean)
 	end
 end
 
--- Anti-climb (ship must not ride up fixed objects). While the hull touches a part
--- outside the ship and is moving up, cancel the upward velocity. Fixed objects
--- block the hull; the buoyancy servo still settles it on the water.
+-- Anti-climb and anti-sink (ShipGuard). The hull's vertical velocity is held while it
+-- touches anything outside the ship, and a hull that sinks below its waterline goal
+-- is lifted back toward it. Horizontal motion is never touched.
 local function touchingOutside(): boolean
 	for _, instance in ipairs(Ship:GetDescendants()) do
 		if instance:IsA("BasePart") and instance.CanCollide then
@@ -185,10 +203,13 @@ local function touchingOutside(): boolean
 	return false
 end
 
+-- Anti-climb also runs while the ship is occupied (the Client owns the hull then,
+-- so this is the server's share of the guard; the goal-based floor is unmanned only).
 RunService.PostSimulation:Connect(function()
 	local v = Main.AssemblyLinearVelocity
-	if v.Y > 0 and touchingOutside() then
-		Main.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+	local vy = ShipGuard.ResolveVertical(v.Y, Main.Position.Y, nil, touchingOutside)
+	if vy ~= v.Y then
+		Main.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z)
 	end
 end)
 
@@ -236,6 +257,7 @@ RunService.PostSimulation:Connect(function(dt)
 		end
 	end
 
+	local now = workspace:GetServerTimeNow()
 	local targetY, pose, depth = WaveFloat.Solve(
 		buoyancyPoints,
 		Main.CenterOfMass.Y,
@@ -246,15 +268,35 @@ RunService.PostSimulation:Connect(function(dt)
 		zoneInfo,
 		"ANALYTIC",
 		nil,
-		workspace:GetServerTimeNow()
+		now
 	)
 
 	if targetY ~= nil then
 		local here = moverAttachment.WorldPosition
 		buoyancy.Enabled = true
-		buoyancy.MaxAxesForce = Vector3.new(0, maxForce * (1 + depth / 10), 0)
 		-- Draft (WoodenShip's attribute, 0 on Boat) lowers the goal, as in the Client.
-		buoyancy.Position = Vector3.new(here.X, targetY - (Ship:GetAttribute("Draft") or 0), here.Z)
+		local draft = Ship:GetAttribute("Draft") or 0
+		local goal = targetY - draft
+		buoyancy.Position = Vector3.new(here.X, goal, here.Z)
+		-- The guard's reference is the sea surface plus the ride height, less Draft. The
+		-- servo goal above is not usable for this: its drag term falls with the hull, so the
+		-- goal sinks as the hull sinks and the gap never grows. This reference stays put.
+		-- SinkRestOffset: where the hull rests relative to the sea surface. Default is the
+		-- ride height less Draft (Boat). WoodenShip sets its own, measured at rest.
+		local surface = seaSurfaceAt(zoneInfo, now)
+		local reference = goal
+		if surface ~= nil then
+			reference = surface + (Ship:GetAttribute("SinkRestOffset") or (baseHeight - draft))
+		end
+		-- Servo authority rises while the hull is below its band, so it can hold a load.
+		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, reference))
+		buoyancy.MaxAxesForce = Vector3.new(0, maxForce * (1 + depth / 10 + reserve), 0)
+		-- Anti-sink: a hull well below its reference is lifted, and contact holds it.
+		local v = Main.AssemblyLinearVelocity
+		local vy = ShipGuard.ResolveVertical(v.Y, here.Y, reference, touchingOutside)
+		if vy ~= v.Y then
+			Main.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z)
+		end
 	else
 		-- Airborne: let gravity bring the hull back down.
 		buoyancy.Enabled = false

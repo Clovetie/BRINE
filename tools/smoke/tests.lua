@@ -688,6 +688,62 @@ if ringTarget then
 end
 Config.Streaming.MinPlayerDistance = 0
 
+-- 19. Ship guard (anti-climb, anti-sink) ---------------------------------------
+-- Pure resolver from ShipHandling/ShipGuard: vertical velocity only.
+local ShipGuard = assert(load(SOURCES.ShipGuard, "=ShipGuard"))()
+local gcfg = ShipGuard.Defaults
+local function noContact()
+	return false
+end
+local function inContact()
+	return true
+end
+check(ShipGuard.ResolveVertical(5, 0, nil, noContact, gcfg) == 5, "guard: a free hull keeps its rise")
+check(ShipGuard.ResolveVertical(5, 0, nil, inContact, gcfg) == 0, "guard: anti-climb holds a rising hull in contact")
+check(ShipGuard.ResolveVertical(-3, 8, 10, inContact, gcfg) == 0, "guard: contact below the goal band stops the sink")
+check(ShipGuard.ResolveVertical(-3, 9.5, 10, inContact, gcfg) == -3, "guard: contact inside the goal band keeps normal motion")
+check(ShipGuard.ResolveVertical(-10, 5, 10, noContact, gcfg) == 15, "guard: floor lifts a hull 5 below goal by (5 - margin) * gain")
+check(ShipGuard.ResolveVertical(-10, 9, 10, noContact, gcfg) == -10, "guard: no floor inside the sink margin")
+check(ShipGuard.ResolveVertical(0, -100, 0, noContact, gcfg) == gcfg.MaxRise, "guard: floor lift is capped at MaxRise")
+check(ShipGuard.ResolveVertical(4, 0, nil, noContact, gcfg) == 4, "guard: an airborne hull is not touched")
+local scans = 0
+local function countingContact()
+	scans += 1
+	return false
+end
+ShipGuard.ResolveVertical(-1, 9.9, 10, countingContact, gcfg)
+check(scans == 0, "guard: contact is not scanned when the answer cannot change")
+check(ShipGuard.Gap(5, 10) == 5 and ShipGuard.Gap(5, nil) == 0, "guard gap: below the goal is positive, airborne is zero")
+check(ShipGuard.ServoReserve(1, gcfg) == 0, "guard reserve: none within the contact band")
+check(math.abs(ShipGuard.ServoReserve(3, gcfg) - 3) < 1e-9, "guard reserve: 1.5 x weight per stud past the band")
+check(ShipGuard.ServoReserve(100, gcfg) == gcfg.ReserveMax, "guard reserve: capped at ReserveMax")
+
+-- 20. Swim model (pure) ---------------------------------------------------------
+local SwimModel = assert(load(SOURCES.SwimModel, "=SwimModel"))()
+local scfg = SwimModel.Config
+check(SwimModel.NextState(false, -2, false, scfg) == true, "swim: enters 2 studs below the surface with no floor")
+check(SwimModel.NextState(false, -0.5, false, scfg) == false, "swim: does not enter at the surface")
+check(SwimModel.NextState(true, 0.5, false, scfg) == true, "swim: stays in at the surface (hysteresis)")
+check(SwimModel.NextState(true, 3, false, scfg) == false, "swim: leaves above the exit depth")
+check(SwimModel.NextState(false, -5, true, scfg) == false, "swim: ground underfoot means walking, not swimming")
+check(SwimModel.SpringSpeed(20, 25, scfg) > 0, "swim spring: lifts a root below the surface")
+check(SwimModel.SpringSpeed(30, 25, scfg) < 0, "swim spring: pulls a root above the surface down")
+check(SwimModel.SpringSpeed(25, 25, scfg) == 0, "swim spring: zero at the float height")
+check(SwimModel.SpringSpeed(-100, 25, scfg) == scfg.MaxSpringSpeed, "swim spring: speed is capped")
+local _, idleY = SwimModel.Desired(0, 0, 0, 0, 5, scfg)
+check(idleY == 5, "swim desired: an idle swimmer rises to the surface")
+local _, diveY = SwimModel.Desired(0, 0, 0, -1, 5, scfg)
+check(diveY < 0, "swim desired: the dive key sinks the swimmer against the spring")
+local eased = SwimModel.Approach(0, 10, 1 / 60, scfg)
+check(eased > 0 and eased < 10, "swim approach: eases toward the desired speed")
+local pitch = SwimModel.Tilt(1, 0, 0, 0, 2, 2, scfg)
+check(pitch > 0 and pitch <= scfg.MaxTilt, "swim tilt: follows a rising wave front, under the cap")
+local cappedPitch = SwimModel.Tilt(100, 0, 0, 0, 2, 2, scfg)
+check(math.abs(cappedPitch - scfg.MaxTilt) < 1e-9, "swim tilt: capped at MaxTilt")
+check(SwimModel.TintAlpha(-3, scfg) == 0, "swim tint: none above the surface")
+check(math.abs(SwimModel.TintAlpha(5, scfg) - 0.5) < 1e-9, "swim tint: half strength at half the full depth")
+check(SwimModel.TintAlpha(50, scfg) == 1, "swim tint: full strength when deep")
+
 print(("SUMMARY passed=%d failed=%d buoyCalls=%d lookups=%d"):format(TESTS.passed, TESTS.failed, BUOY_CALLS, LOOKUP_CALLS))
 
 -- String globals for the JS runner (avoids iterating Lua tables from JS).

@@ -11,6 +11,8 @@ local ZoneManager = require(game.ReplicatedStorage.Gerstner.Serial.ZoneManager)
 local WaveFloat = require(game.ReplicatedStorage.FloatingObjectGeneration.WaveFloat)
 -- Engine, drag, braking, keel, sail and rudder model (shared with Ship.Handler).
 local ShipDrive = require(game.ReplicatedStorage.ShipHandling.ShipDrive)
+-- Anti-climb and anti-sink (ROADMAP ship guard), shared with Ship.Handler.
+local ShipGuard = require(game.ReplicatedStorage.ShipHandling.ShipGuard)
 local tuning = ShipDrive.Defaults
 
 local Main = Ship:WaitForChild("Main") :: BasePart
@@ -121,9 +123,10 @@ local zoneAccumulated = 0
 local currentRotation = 0
 updateZoneMultipliers()
 
--- Anti-climb (same rule as the Handler). The driver's machine owns the hull while
--- someone is aboard, so the guard runs here: while the hull touches a part outside
--- the ship and is moving up, cancel the upward velocity.
+-- Anti-climb and anti-sink. The driver's machine owns the hull while someone is
+-- aboard, so the guard runs here as well as on the Handler. Contact with anything
+-- outside the ship holds the hull's vertical motion, and the floor lifts a hull that
+-- sinks well below its waterline goal (set in the solve below).
 local shipModel = VehicleSeat.Parent :: Instance
 local function touchingOutside(): boolean
 	for _, instance in ipairs(shipModel:GetDescendants()) do
@@ -140,8 +143,9 @@ end
 
 RunService.PostSimulation:Connect(function()
 	local v = Main.AssemblyLinearVelocity
-	if v.Y > 0 and touchingOutside() then
-		Main.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+	local vy = ShipGuard.ResolveVertical(v.Y, Main.Position.Y, nil, touchingOutside)
+	if vy ~= v.Y then
+		Main.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z)
 	end
 end)
 
@@ -211,10 +215,19 @@ RunService.PostSimulation:Connect(function(dt)
 		-- and the servo only corrects height (see the PerAxis note above).
 		local here = moverAttachment.WorldPosition
 		alignPosition.Enabled = true
-		alignPosition.MaxAxesForce = Vector3.new(0, maxForce * (1 + (depth / 10)), 0)
 		-- Draft (WoodenShip's attribute, 0 on Boat) lowers the goal so the hull sits
 		-- under the surface like the Boat does.
-		alignPosition.Position = Vector3.new(here.X, targetY - (Ship:GetAttribute("Draft") or 0), here.Z)
+		local goal = targetY - (Ship:GetAttribute("Draft") or 0)
+		alignPosition.Position = Vector3.new(here.X, goal, here.Z)
+		-- Servo authority rises while the hull is below its band, so it can hold a load.
+		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, goal))
+		alignPosition.MaxAxesForce = Vector3.new(0, maxForce * (1 + (depth / 10) + reserve), 0)
+		-- Anti-sink: a hull well below its goal is lifted, and contact holds it.
+		local v = Main.AssemblyLinearVelocity
+		local vy = ShipGuard.ResolveVertical(v.Y, here.Y, goal, touchingOutside)
+		if vy ~= v.Y then
+			Main.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z)
+		end
 	else
 		alignPosition.Enabled = false
 	end
