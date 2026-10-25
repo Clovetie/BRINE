@@ -30,6 +30,23 @@ local buoyancyPoints = {
 local boatWidth = Main.Size.X
 local boatLength = Main.Size.Z
 local baseHeight = Main.Size.Y / 2
+
+-- Sea surface under the hull: the mean of the four corner heights, as WaveFloat.Solve
+-- computes its surface. Nil only if every corner lookup failed.
+local function seaSurfaceAt(zone, now: number): number?
+	local sum, count = 0, 0
+	for _, point in buoyancyPoints do
+		local h = WaveFloat.HeightAt(point.WorldPosition, zone, nil, "ANALYTIC", now)
+		if h ~= nil then
+			sum += h
+			count += 1
+		end
+	end
+	if count == 0 then
+		return nil
+	end
+	return sum / count
+end
 -- Buoyancy force limit follows the hull's mass at runtime (ROADMAP 2.2). It is
 -- derived in RefreshForceLimits, not read once at startup.
 local maxForce = 0
@@ -195,6 +212,7 @@ RunService.PostSimulation:Connect(function(dt)
 
 	-- Analytic surface (the Gerstner sum the ocean mesh is displaced with), so
 	-- the ship floats without needing HeightLookup.ClientInit on the client.
+	local now = workspace:GetServerTimeNow()
 	local targetY, orientation, depth = WaveFloat.Solve(
 		buoyancyPoints,
 		Main.CenterOfMass.Y,
@@ -205,7 +223,7 @@ RunService.PostSimulation:Connect(function(dt)
 		currentZoneInfo,
 		"ANALYTIC",
 		nil,
-		workspace:GetServerTimeNow()
+		now
 	)
 
 	-- `nil` means the hull is airborne: stop driving it and let gravity bring
@@ -217,14 +235,22 @@ RunService.PostSimulation:Connect(function(dt)
 		alignPosition.Enabled = true
 		-- Draft (WoodenShip's attribute, 0 on Boat) lowers the goal so the hull sits
 		-- under the surface like the Boat does.
-		local goal = targetY - (Ship:GetAttribute("Draft") or 0)
+		local draft = Ship:GetAttribute("Draft") or 0
+		local goal = targetY - draft
 		alignPosition.Position = Vector3.new(here.X, goal, here.Z)
 		-- Servo authority rises while the hull is below its band, so it can hold a load.
-		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, goal))
+		-- Guard reference: sea surface plus SinkRestOffset (default baseHeight - Draft).
+		-- The goal above is not used for this, because its drag term falls with the hull.
+		local surface = seaSurfaceAt(currentZoneInfo, now)
+		local reference = goal
+		if surface ~= nil then
+			reference = surface + (Ship:GetAttribute("SinkRestOffset") or (baseHeight - draft))
+		end
+		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, reference))
 		alignPosition.MaxAxesForce = Vector3.new(0, maxForce * (1 + (depth / 10) + reserve), 0)
-		-- Anti-sink: a hull well below its goal is lifted, and contact holds it.
+		-- Anti-sink: a hull well below its reference is lifted, and contact holds it.
 		local v = Main.AssemblyLinearVelocity
-		local vy = ShipGuard.ResolveVertical(v.Y, here.Y, goal, touchingOutside)
+		local vy = ShipGuard.ResolveVertical(v.Y, here.Y, reference, touchingOutside)
 		if vy ~= v.Y then
 			Main.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z)
 		end

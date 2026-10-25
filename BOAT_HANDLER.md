@@ -202,3 +202,10 @@ weight). Settled height is the hull's Main Y minus the sea surface.
 Open: a steady 6x load on WoodenShip still sinks about 5 studs. The next step is an
 explicit upward `VectorForce` spring with damping, which would not depend on the velocity
 clamp and the servo fighting each physics step. Not built yet.
+
+### Client (driver's machine)
+
+`Ship.Client` uses the same surface reference as the Handler (`seaSurfaceAt` plus
+`SinkRestOffset`, default `baseHeight - Draft`). It was updated after the Handler, so the
+goal-based reference is gone from both. WoodenShip.Client is still Disabled and was not
+updated, as agreed.
