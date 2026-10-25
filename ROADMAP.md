@@ -94,7 +94,7 @@ releases). See [`tools/README.md`](tools/README.md).
 | # | Item | Effort | Risk | Acceptance |
 | --- | --- | --- | --- | --- |
 | 6.1 | Make `setup-tools.sh` resilient to GitHub release-supplier flakiness (retry + alternate mirror) | M | Low | `stylua`/`selene`/`luau` install reliably in CI/dev. ✅ retried + Rokit tip added |
-| 6.2 | Add a `luau-analyze` / `selene` CI step (currently only `check-syntax.js` is runnable without the full toolchain) | M | Low | Static analysis gate in CI. ✅ `.github/workflows/ci.yml` |
+| 6.2 | Add a `luau-analyze` / `selene` CI step (currently only `check-syntax.js` is runnable without the full toolchain) | M | Low | Static analysis gate in CI. 🟡 PARTIAL — `.github/workflows/ci.yml` runs validate-project, check-syntax, smoke-test, and a `luau-compile` gate over all 29 `src/**/*.luau` files. `selene` is not a gate yet (repo `tools/selene.toml` uses a section the installed selene does not know). Not yet run on GitHub Actions; it runs on the first push. |
 | 6.3 | ✅ DONE — Swap the example LLM adapter for a real fixture so the preflight gate is demonstrably green before use | S | Low | `evaluate-models.js` shows `ADMIT` on a known-good adapter. The committed example ships `tools/fixture-model.js` (deterministic demo adapter) so the gate is green end-to-end, plus `candidate-local` to exercise the fail-closed `REJECT` path. |
 | 6.4 | ✅ DONE — `tools/call-graph.js` (dep graph + orphaned/public-API surface) | — | — | Machine-checks AUDIT §4. |
 | 6.5 | ✅ DONE — `tools/metrics.js` (LOC/complexity/heavy-construct trend) | — | — | Spots the largest/hottest files per iteration. |
@@ -103,6 +103,14 @@ releases). See [`tools/README.md`](tools/README.md).
 | 6.8 | ✅ DONE — `tools/hot-loop-scan.js` (per-frame/loop risk) | — | — | Flags `GetServerTimeNow` in HeightLookup loop, `GetAllNodes`, raycasts. |
 | 6.9 | ✅ DONE — `tools/audit.sh` orchestrator + `tools/lib/luau.js` shared engine | — | — | One command runs everything; JSON reports in `tools/reports/`. |
 | 6.10 | ✅ DONE — `tools/workbench.js` interactive evaluation workbench + `tools/lib/evaluate.js` shared scoring engine; expanded example suite | — | — | List/add/remove models & tests, run the suite with per-test pass/fail, write JSON reports, and a demonstrably-green example. |
+
+---
+
+## Phase 7 — Island & floating-object density
+
+| # | Item | Effort | Risk | Acceptance |
+| --- | --- | --- | --- | --- |
+| 7.1 | 🟡 DONE, PENDING PLAYTEST — Islands and floating objects were too dense and too evenly packed, and the activation scan missed large islands. A shared 2-octave `math.noise` field (`IslandGeneration/Density.luau`) now gates cell spawns, so archipelagos cluster and open water stays sparse. Islands: `CellSize` 360 → 440, `GridJitter` 0.45 → 0.5, `SpacingPadding` 70 → 120, cell chance × density (`MinChance` 0.25, `MaxChance` 0.9). Floating objects: `CellSize` 150 → 200, `GridJitter` 0.4 → 0.5, `ObjectChance` 0.65 → 1 (density does the thinning), density 0.15–0.75. Activation reach is now `TriggerDistance + largest template radius + CellSize` (was `MaxIslandRadius`, which missed islands up to radius 1400). `MaxCachedRecords` stays 3000. Read-only `CountNearby` helpers were added for diagnostics. Live walk (same path as baseline): cached islands 235 → 107, rendered 17 → 7, islands within 600 studs of the walker 64% → 64% of samples (mean 1.0 → 0.9), cached objects 943 → 432 (91% of samples have one within 300 studs). Stress probe: cached flat at 107, rendered 7 → 9. Overlap audit: 0 overlapping pairs. Open: the spacing and periodicity change is not measured, since the generator does not expose all cached records; the rendered sample (n=7) is too small. Tuning knob if too sparse: `Placement.Density.MinChance`. | M | Med | Sparser, less compacted, less periodic islands and objects, with the same visible density near players. |
 
 ---
 
