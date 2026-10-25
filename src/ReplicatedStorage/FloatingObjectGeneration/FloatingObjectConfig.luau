@@ -85,7 +85,7 @@ FloatingObjectConfig.Classes = {
 		ClusterRadius = 26, -- max offset from the cell's jittered center
 		MinSpacing = 12, -- min center distance to other floating records
 		SimDistance = 210, -- within this player distance: full buoyancy sim
-		FloatRatio = 0.5, -- half the height above water
+		FloatRatio = 0.6, -- 60% of the height above water
 	},
 	-- Medium structures: rafts, dinghies, broken masts.
 	Medium = {
@@ -95,7 +95,7 @@ FloatingObjectConfig.Classes = {
 		ClusterRadius = 14,
 		MinSpacing = 26,
 		SimDistance = 250,
-		FloatRatio = 0.5,
+		FloatRatio = 0.6,
 	},
 	-- Large structures: wrecks, floating docks, ruined hulls.
 	Large = {
