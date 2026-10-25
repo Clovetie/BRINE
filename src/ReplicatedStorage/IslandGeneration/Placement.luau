@@ -130,6 +130,17 @@ local function isSpotClear(centerPos: Vector3, radius: number, ignoredRecord: an
 end
 
 -- Removes every footprint (used when the generator clears its state).
+-- ROADMAP 7.1 (diagnostics): number of footprints (cached records and seeded islands)
+-- within `radius` of `centerPos`. Read-only.
+function Placement.countNear(centerPos: Vector3, radius: number): number
+	local center = Vector3.new(centerPos.X, Config.PlaneOffset, centerPos.Z)
+	local count = 0
+	for _ in islandOctree:SearchRadius(center, radius) do
+		count += 1
+	end
+	return count
+end
+
 function Placement.clearFootprints()
 	islandOctree:ClearAllNodes()
 	table.clear(largeFootprints)

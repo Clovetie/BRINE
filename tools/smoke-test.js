@@ -174,6 +174,10 @@ const tWaveFloat = transformLuau(
 	read("src/ReplicatedStorage/FloatingObjectGeneration/WaveFloat.luau"),
 	"wavefloat"
 );
+const tDensity = transformLuau(
+	read("src/ReplicatedStorage/IslandGeneration/Density.luau"),
+	"density"
+);
 const tGenerator = transformLuau(
 	read("src/ReplicatedStorage/FloatingObjectGeneration/FloatingObjectGenerator.luau"),
 	"generator"
@@ -195,6 +199,7 @@ const bundle = [
 	`  FloatingObjectConfig = ${luaLongString(4, tConfig)},`,
 	`  WaveFloat = ${luaLongString(4, tWaveFloat)},`,
 	`  FloatingObjectGenerator = ${luaLongString(4, tGenerator)},`,
+	`  Density = ${luaLongString(4, tDensity)},`,
 	"}",
 	tTests,
 ].join("\n");

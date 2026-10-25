@@ -110,10 +110,10 @@ FloatingObjectConfig.Classes = {
 	-- Debris: planks, flotsam, jetsam. Spawned in clusters.
 	Debris = {
 		Weight = 4,
-		PerCellMin = 2,
-		PerCellMax = 5,
+		PerCellMin = 1,
+		PerCellMax = 3,
 		ClusterRadius = 34,
-		MinSpacing = 6,
+		MinSpacing = 12,
 		SimDistance = 170,
 		FloatRatio = 0.4,
 	},
@@ -136,13 +136,24 @@ FloatingObjectConfig.DefaultClassSettings = {
 FloatingObjectConfig.Placement = {
 	-- Jittered-grid cell size for floating object records. Smaller than the
 	-- island CellSize (360) because floating objects are small and dense.
-	CellSize = 150,
+	CellSize = 200,
 
 	-- Random offset per cell, as a fraction of CellSize.
-	GridJitter = 0.4,
+	GridJitter = 0.5,
 
-	-- Chance that an otherwise valid cell contains floating objects at all.
-	ObjectChance = 0.65,
+	-- Chance that an otherwise valid cell contains floating objects at all. 1 =
+	-- no extra thinning; the archipelago density field below does the thinning.
+	ObjectChance = 1,
+
+	-- ROADMAP 7.1: objects follow the same density field as the islands
+	-- (IslandConfig.Placement.Density), so debris gathers near archipelagos and
+	-- thins out over open water.
+	Density = {
+		Enabled = true,
+		Scale = 1400,
+		MinChance = 0.15,
+		MaxChance = 0.75,
+	},
 
 	-- Keep this radius around world origin object-free (spawn safety).
 	SpawnSafetyRadius = 140,

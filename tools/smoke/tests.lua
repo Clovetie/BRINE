@@ -213,6 +213,11 @@ zoneManagerInst.Parent = serial
 local octreeInst = newInstance("ModuleScript", "Octree")
 octreeInst.Parent = ReplicatedStorage
 
+local islandGenFolder = newInstance("Folder", "IslandGeneration")
+islandGenFolder.Parent = ReplicatedStorage
+local densityInst = newInstance("ModuleScript", "Density")
+densityInst.Parent = islandGenFolder
+
 local fogFolder = newInstance("Folder", "FloatingObjectGeneration")
 fogFolder.Parent = ReplicatedStorage
 local configInst = newInstance("ModuleScript", "FloatingObjectConfig")
@@ -237,6 +242,7 @@ MODULES[gerstner] = { loaded = GerstnerMock }
 MODULES[waveFloatInst] = { source = "WaveFloat" }
 MODULES[configInst] = { source = "FloatingObjectConfig" }
 MODULES[generatorInst] = { source = "FloatingObjectGenerator" }
+MODULES[densityInst] = { source = "Density" }
 
 function luauRequire(inst)
 	local entry = MODULES[inst]

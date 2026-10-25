@@ -52,6 +52,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(script.Parent.IslandConfig)
+local Density = require(script.Parent.Density)
 local Discovery = require(script.Parent.Discovery)
 local Placement = require(script.Parent.Placement)
 local Presentation = require(script.Parent.Presentation)
@@ -87,6 +88,7 @@ local mapSeeded = false
 local streamingLoopRunning = false
 local generationToken = 0
 local cachedWorldSeed = nil
+local cachedMaxTemplateRadius = nil
 
 
 -- Config helpers ---------------------------------------------------------------
@@ -580,6 +582,20 @@ local function makeRecord(template: Model, biomeName: string, centerPos: Vector3
 	}
 end
 
+-- ROADMAP 7.1: chance that cell (cx, cz) holds an island. The shared density field
+-- (Density.luau) makes archipelagos dense and open water sparse. IslandChance is
+-- still applied as a global multiplier.
+local function islandChanceAt(cx: number, cz: number, streamingConfig): number
+	local chance = streamingConfig.IslandChance or 1
+	local dc = Config.Placement.Density
+	if dc and dc.Enabled ~= false then
+		local cell = getCellSize()
+		local t = Density.value(cx * cell, cz * cell, getWorldSeed(), dc.Scale or 1400)
+		chance *= Density.chance(t, dc.MinChance or 0.25, dc.MaxChance or 0.9)
+	end
+	return chance
+end
+
 local function generateCellRecord(cx: number, cz: number)
 	local key = cellKey(cx, cz)
 	if cellCache[key] ~= nil then
@@ -602,7 +618,7 @@ local function generateCellRecord(cx: number, cz: number)
 	local cell = getCellSize()
 	local rng = Random.new(getCellSeed(cx, cz))
 
-	if rng:NextNumber() > (streamingConfig.IslandChance or 1) then
+	if rng:NextNumber() > islandChanceAt(cx, cz, streamingConfig) then
 		cellCache[key] = NO_ISLAND
 		return NO_ISLAND
 	end
@@ -742,10 +758,26 @@ local function generateCellsAroundPlayers()
 	end)
 end
 
+-- ROADMAP 4.2 follow-up / activation fix: the largest premade island radius in the
+-- catalog. Activation must reach every record, so the scan is widened to this
+-- value instead of the static Placement.MaxIslandRadius (which can be smaller).
+local function getMaxTemplateRadius(): number
+	if cachedMaxTemplateRadius == nil then
+		local best = Config.Placement.MaxIslandRadius or 400
+		for _, entry in IslandGenerator.GetCatalog() do
+			for _, template in entry.templates do
+				best = math.max(best, Discovery.modelRadius(template))
+			end
+		end
+		cachedMaxTemplateRadius = best
+	end
+	return cachedMaxTemplateRadius
+end
+
 local function activateRecordsAroundPlayers()
 	local streamingConfig = getStreamingConfig()
 	local maxActivations = streamingConfig.MaxActivationsPerCycle or 8
-	local activationRadius = (getRiseConfig().TriggerDistance or 0) + Config.Placement.MaxIslandRadius + getCellSize()
+	local activationRadius = (getRiseConfig().TriggerDistance or 0) + getMaxTemplateRadius() + getCellSize()
 	local activated = 0
 
 	forEachPlayerCell(activationRadius, streamingConfig.MaxActivationCellsPerCycle or 256, function(_, _, key)
@@ -992,6 +1024,11 @@ function IslandGenerator.PlaceOne(centerPos: Vector3, index: number): Model?
 	return beginIslandRise(record)
 end
 
+-- ROADMAP 7.1 (diagnostics): cached island footprints within `radius` of a position.
+function IslandGenerator.CountNearby(position: Vector3, radius: number): number
+	return Placement.countNear(position, radius)
+end
+
 function IslandGenerator.GetStats()
 	local cachedRecords = #allGeneratedRecords
 	return {
@@ -1045,6 +1082,7 @@ function IslandGenerator.ClearGenerated()
 	Placement.clearFootprints()
 	mapSeeded = false
 	catalog = nil -- force re-discovery on next Generate
+	cachedMaxTemplateRadius = nil
 end
 
 return IslandGenerator

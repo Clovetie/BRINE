@@ -41,6 +41,15 @@ end
 math.atan2 = function(y, x)
 	return math.atan(y, x)
 end
+-- Deterministic stand-in for Roblox math.noise (Perlin, range about [-0.5, 0.5]).
+-- Only used so the Density field can run under the plain-Lua harness.
+if math.noise == nil then
+	math.noise = function(x, y, z)
+		local s = math.sin(x * 12.9898 + y * 78.233 + (z or 0) * 37.719) * 43758.5453
+		return (s - math.floor(s)) - 0.5
+	end
+end
+
 math.clamp = function(x, lo, hi)
 	return math.min(math.max(x, lo), hi)
 end

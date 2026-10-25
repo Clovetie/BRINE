@@ -72,6 +72,7 @@ local Workspace = game:GetService("Workspace")
 
 local Config = require(script.Parent.FloatingObjectConfig)
 local WaveFloat = require(script.Parent.WaveFloat)
+local Density = require(ReplicatedStorage.IslandGeneration.Density)
 local OctreeModule = require(ReplicatedStorage:WaitForChild("Octree"))
 local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
 
@@ -1541,7 +1542,15 @@ local function generateCellRecords(cx: number, cz: number)
 	local rng = Random.new(getCellSeed(cx, cz))
 	local emptyMarker = nil
 
-	if rng:NextNumber() > (pl.ObjectChance or 0.65) then
+	-- ROADMAP 7.1: objects follow the shared density field (archipelagos dense,
+	-- open water sparse). ObjectChance is a global multiplier.
+	local objectChance = pl.ObjectChance or 1
+	local dc = pl.Density
+	if dc and dc.Enabled ~= false then
+		local t = Density.value(cx * cell, cz * cell, getWorldSeed(), dc.Scale or 1400)
+		objectChance *= Density.chance(t, dc.MinChance or 0.15, dc.MaxChance or 0.75)
+	end
+	if rng:NextNumber() > objectChance then
 		emptyMarker = true
 	end
 
@@ -2151,6 +2160,20 @@ function FloatingObjectGenerator.RemovePlayer(player: Player)
 			record.owner = nil
 		end
 	end
+end
+
+-- ROADMAP 7.1 (diagnostics): cached, live object records within `radius` of a
+-- position. Read-only.
+function FloatingObjectGenerator.CountNearby(position: Vector3, radius: number): number
+	local center = Vector3.new(position.X, PLANE_Y, position.Z)
+	local count = 0
+	for _, node in recordOctree:SearchRadius(center, radius) do
+		local record = node.Object and node.Object.record
+		if record == nil or not record.dead then
+			count += 1
+		end
+	end
+	return count
 end
 
 function FloatingObjectGenerator.GetStats()
