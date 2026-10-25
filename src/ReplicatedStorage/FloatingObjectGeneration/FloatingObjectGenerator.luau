@@ -424,11 +424,17 @@ local function hasFreshCamera(now: number): boolean
 	return false
 end
 
-local function isSeenByAnyCamera(pos: Vector3, now: number): boolean
+-- extraAngleDeg widens the cone (hysteresis): a rendered object keeps its place
+-- while it sits at the edge of view instead of flickering out.
+local function isSeenByAnyCamera(pos: Vector3, now: number, extraAngleDeg: number?): boolean
 	local streamingConfig = getStreamingConfig()
 	local timeout = streamingConfig.CameraDataTimeout or 3
 	local maxDistance = streamingConfig.CameraMaxDistance or 800
 	local viewCos = getViewConeCos()
+	if extraAngleDeg and viewCos > -1 then
+		local angleDeg = math.min(89, (streamingConfig.CameraViewConeAngleDeg or 55) + extraAngleDeg)
+		viewCos = math.cos(math.rad(angleDeg))
+	end
 
 	for _, state in cameraStates do
 		if now - state.at <= timeout then
@@ -1012,9 +1018,13 @@ local function disconnectRecordSignals(record)
 	end
 end
 
+-- Diagnostics: how many times each cache reason fired this session.
+local cacheCounts = {}
+
 -- Destroys the clone and returns the record to the lightweight cache, or
 -- permanently despawns it (`permanent`, e.g. lifetime expiry / physics loss).
 function cacheObjectRecord(record, reason: string, permanent: boolean?)
+	cacheCounts[reason] = (cacheCounts[reason] or 0) + 1
 	disconnectRecordSignals(record)
 	forgetOwnership(record)
 	record.nearestPlayer = nil
@@ -1420,6 +1430,19 @@ end
 -- Best record to cache when the render cap is full. Prefers objects with no
 -- player nearby (frozen ones first - removing them interrupts no
 -- simulation); falls back to the OLDEST rendered object.
+-- An object is "in sight" when a player's camera can see it, or a player is
+-- inside its simulation band. In-sight objects are never cached or expired to
+-- make room or on a timer.
+local function isInSight(record, now: number): boolean
+	local pos = getRecordWorldPos(record)
+	if isSeenByAnyCamera(pos, now, 15) then
+		return true
+	end
+	local _, nearestSq = nearestPlayerInfo(pos)
+	local simDistance = record.simDistance or 200
+	return nearestSq <= simDistance * simDistance
+end
+
 local function getCullCandidate()
 	local despawnConfig = getDespawnConfig()
 	local protectDistance = despawnConfig.CullNearPlayerDistance or 260
@@ -1431,6 +1454,9 @@ local function getCullCandidate()
 	local oldestAge = -math.huge
 
 	for record in activeRecords do
+		if isInSight(record, now) then
+			continue
+		end
 		local pos = getRecordWorldPos(record)
 		local nearestSq = distanceSqToNearestPlayer(pos)
 		local age = now - (record.activatedAt or now)
@@ -1733,9 +1759,10 @@ local function recordHasInterest(record, now: number): (boolean, boolean)
 	record.nearestSq = nearestSq
 	updateSimBand(record, nearestSq)
 
-	-- Keep a clear ring around each player (Streaming.MinPlayerDistance).
+	-- Keep a clear ring around each player (Streaming.MinPlayerDistance) for
+	-- objects that are not yet rendered. Rendered objects stay in the world.
 	local minDistance = streamingConfig.MinPlayerDistance or 0
-	if nearestSq < minDistance * minDistance then
+	if not record.rendered and nearestSq < minDistance * minDistance then
 		record.unseenSince = nil
 		return false, false
 	end
@@ -1753,7 +1780,7 @@ local function recordHasInterest(record, now: number): (boolean, boolean)
 		record.unseenSince = nil
 		return true, true -- distance-only fallback: keep rendered, frozen
 	end
-	if isSeenByAnyCamera(pos, now) then
+	if isSeenByAnyCamera(pos, now, record.rendered and 15 or nil) then
 		record.unseenSince = nil
 		return true, true
 	end
@@ -1840,7 +1867,12 @@ local function updateLifetimeDespawns()
 	local expired = {}
 	for record in activeRecords do
 		if record.expiresAt and now >= record.expiresAt then
-			table.insert(expired, record)
+			if isInSight(record, now) then
+				-- Never expire an object a player can see; check again shortly.
+				record.expiresAt = now + 10
+			else
+				table.insert(expired, record)
+			end
 		end
 	end
 	for _, record in expired do
@@ -2219,6 +2251,7 @@ function FloatingObjectGenerator.GetStats()
 		FrozenObjects = frozen,
 		MaxRenderedObjects = getStreamingConfig().MaxRenderedObjects or 500,
 		Streaming = streamingLoopRunning,
+		CacheReasons = cacheCounts,
 		FreshCameras = freshCameras,
 		NearBandStuds = getBuoyancyConfig().NearDistance or 150,
 		ClientOwnedObjects = clientOwnedCount(),

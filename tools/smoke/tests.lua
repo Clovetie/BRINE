@@ -677,14 +677,14 @@ if rigHull then
 end
 
 -- 18. Clear ring around the player ----------------------------------------------
--- Park the player on a rendered object with the ring on: the object must be
--- cached (its model destroyed) rather than kept in the world.
+-- The ring stops new objects from spawning close to a player. A rendered object
+-- the player walks up to is in sight, so it must stay in the world.
 Config.Streaming.MinPlayerDistance = 200
 local ringTarget = buoyantModelNear(rootPart.Position, 6)
 if ringTarget then
 	rootPart.CFrame = CFrame.new(ringTarget.PrimaryPart.Position.X, 25, ringTarget.PrimaryPart.Position.Z)
 	pumpFrames(30)
-	check(ringTarget.Parent == nil, "an object inside MinPlayerDistance of a player is cached, not rendered")
+	check(ringTarget.Parent ~= nil, "a rendered object inside MinPlayerDistance stays in the world (in sight)")
 end
 Config.Streaming.MinPlayerDistance = 0
 
