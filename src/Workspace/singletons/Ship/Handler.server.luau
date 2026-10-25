@@ -9,6 +9,7 @@ local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local WaveFloat = require(ReplicatedStorage.FloatingObjectGeneration.WaveFloat)
+local ShipDrive = require(ReplicatedStorage.ShipHandling.ShipDrive)
 local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
 
 local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
@@ -101,6 +102,16 @@ buoyancy.Position = moverAttachment.WorldPosition
 buoyancy.Enabled = false
 buoyancy.Parent = VehicleSeat
 
+-- Unmanned, the hull coasts to a stop: drag and keel damping only (no engine, no
+-- sail, no rudder). ShipDrive.Acceleration with zero command and zero sail is just that.
+local unmannedDrag = Instance.new("VectorForce")
+unmannedDrag.Name = "UnmannedDrag"
+unmannedDrag.Attachment0 = moverAttachment
+unmannedDrag.RelativeTo = Enum.ActuatorRelativeTo.World
+unmannedDrag.ApplyAtCenterOfMass = true
+unmannedDrag.Force = Vector3.zero
+unmannedDrag.Parent = VehicleSeat
+
 local orientation = Instance.new("AlignOrientation")
 orientation.Name = "UnmannedOrientation"
 orientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
@@ -153,6 +164,9 @@ local function setUnmanned(active: boolean)
 	unmanned = active
 	buoyancy.Enabled = active
 	orientation.Enabled = active
+	if not active then
+		unmannedDrag.Force = Vector3.zero
+	end
 end
 
 -- Anti-climb (ship must not ride up fixed objects). While the hull touches a part
@@ -191,6 +205,25 @@ RunService.PostSimulation:Connect(function(dt)
 
 	refreshLimits()
 	zoneAccumulated += dt
+
+	-- Coast to a stop: drag on the hull's own velocity (the engine and sail are off).
+	local look = VehicleSeat.CFrame.LookVector
+	local forward = Vector3.new(look.X, 0, look.Z)
+	if forward.Magnitude > 1e-3 then
+		forward = forward.Unit
+		local drag = ShipDrive.Acceleration(
+			Main.AssemblyLinearVelocity,
+			forward,
+			forward:Cross(Vector3.yAxis),
+			0,
+			dt,
+			Vector3.zero,
+			0,
+			ShipDrive.Defaults
+		)
+		unmannedDrag.Force = drag * Main.AssemblyMass
+	end
+
 	local currentZone = zoneInfo.CURRENT_ZONE
 	if currentZone and currentZone.Type ~= "Whirlpool" then
 		if currentZone.Link then
@@ -220,7 +253,8 @@ RunService.PostSimulation:Connect(function(dt)
 		local here = moverAttachment.WorldPosition
 		buoyancy.Enabled = true
 		buoyancy.MaxAxesForce = Vector3.new(0, maxForce * (1 + depth / 10), 0)
-		buoyancy.Position = Vector3.new(here.X, targetY, here.Z)
+		-- Draft (WoodenShip's attribute, 0 on Boat) lowers the goal, as in the Client.
+		buoyancy.Position = Vector3.new(here.X, targetY - (Ship:GetAttribute("Draft") or 0), here.Z)
 	else
 		-- Airborne: let gravity bring the hull back down.
 		buoyancy.Enabled = false

@@ -9,6 +9,9 @@ local ZoneManager = require(game.ReplicatedStorage.Gerstner.Serial.ZoneManager)
 -- The same buoyancy solver the floating props use (ROADMAP 2.4): one physics
 -- model for the boat and for everything else on the water.
 local WaveFloat = require(game.ReplicatedStorage.FloatingObjectGeneration.WaveFloat)
+-- Engine, drag, braking, keel, sail and rudder model (shared with Ship.Handler).
+local ShipDrive = require(game.ReplicatedStorage.ShipHandling.ShipDrive)
+local tuning = ShipDrive.Defaults
 
 local Main = Ship:WaitForChild("Main") :: BasePart
 local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
@@ -25,11 +28,12 @@ local buoyancyPoints = {
 local boatWidth = Main.Size.X
 local boatLength = Main.Size.Z
 local baseHeight = Main.Size.Y / 2
--- Force limits follow the hull's mass at runtime (ROADMAP 2.2). They are
+-- Buoyancy force limit follows the hull's mass at runtime (ROADMAP 2.2). It is
 -- derived in RefreshForceLimits, not read once at startup.
 local maxForce = 0
-local throttleForce = 0
 local lastMass = -1
+-- Spooled throttle: the engine answers the seat's input over time, not instantly.
+local command = 0
 
 local moverAttachment = Instance.new("Attachment")
 moverAttachment.Name = "ShipMoverAttachment"
@@ -66,18 +70,16 @@ alignOrientation.Responsiveness = 12
 alignOrientation.RigidityEnabled = false
 alignOrientation.Parent = VehicleSeat
 
--- The throttle is horizontal only. With Vector mode and zero velocity on every
--- axis, a Magnitude-limited throttle also cancelled Y: it held the hull at its
--- current height and buoyancy could not lift or lower it. PerAxis with zero Y
--- authority leaves vertical motion to the buoyancy servo alone (ROADMAP 2.5).
-local linearVelocity = Instance.new("LinearVelocity")
-linearVelocity.Name = "ShipThrottle"
-linearVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
-linearVelocity.Attachment0 = moverAttachment
-linearVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
-linearVelocity.ForceLimitsEnabled = true
-linearVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
-linearVelocity.Parent = VehicleSeat
+-- Drive force (ROADMAP 2.5 / ship handling). A VectorForce the client writes each
+-- frame from ShipDrive, so the hull accelerates, coasts, brakes and sails by Newton's
+-- laws. It is horizontal only; vertical motion belongs to the buoyancy servo alone.
+local drive = Instance.new("VectorForce")
+drive.Name = "ShipDrive"
+drive.Attachment0 = moverAttachment
+drive.RelativeTo = Enum.ActuatorRelativeTo.World
+drive.ApplyAtCenterOfMass = true
+drive.Force = Vector3.zero
+drive.Parent = VehicleSeat
 
 -- Recomputes every force limit from the current AssemblyMass. Runs at once and then each
 -- frame, but only writes when the mass has changed (the hull mass changes when cargo or
@@ -89,10 +91,8 @@ local function RefreshForceLimits()
 	end
 	lastMass = mass
 	maxForce = mass * workspace.Gravity * 4
-	throttleForce = mass * workspace.Gravity * 3
 	alignPosition.MaxAxesForce = Vector3.new(0, maxForce, 0)
 	alignOrientation.MaxTorque = mass * 5000
-	linearVelocity.MaxAxesForce = Vector3.new(throttleForce, 0, throttleForce)
 end
 RefreshForceLimits()
 
@@ -103,7 +103,7 @@ script.Destroying:Connect(function()
 	moverAttachment:Destroy()
 	alignPosition:Destroy()
 	alignOrientation:Destroy()
-	linearVelocity:Destroy()
+	drive:Destroy()
 end)
 
 local currentZoneInfo = {
@@ -163,20 +163,30 @@ RunService.PostSimulation:Connect(function(dt)
 		end
 	end
 
-	if VehicleSeat.Steer == 1 then
-		currentRotation -= math.rad(0.5)
-	elseif VehicleSeat.Steer == -1 then
-		currentRotation += math.rad(0.5)
-	end
-
-	-- Drive along the hull's heading on the horizontal plane only: a pitched
-	-- LookVector would otherwise ask for vertical speed the throttle may not give.
+	-- Heading: the rudder turns the hull only while it is moving, and turns it
+	-- faster the faster it goes (ShipDrive.YawRate). Positive Steer turns the bow
+	-- the same way as before.
 	local look = VehicleSeat.CFrame.LookVector
-	local flat = Vector3.new(look.X, 0, look.Z)
-	if VehicleSeat.Throttle == 1 and flat.Magnitude > 1e-3 then
-		linearVelocity.VectorVelocity = flat.Unit * 30
+	local forward = Vector3.new(look.X, 0, look.Z)
+	local velocity = Main.AssemblyLinearVelocity
+	if forward.Magnitude > 1e-3 then
+		forward = forward.Unit
+		local right = forward:Cross(Vector3.yAxis)
+		local forwardSpeed = Vector3.new(velocity.X, 0, velocity.Z):Dot(forward)
+		currentRotation -= ShipDrive.YawRate(forwardSpeed, VehicleSeat.Steer, tuning) * dt
+
+		-- Throttle spools toward the seat input. Wind comes from the same direction
+		-- as the waves (workspace.GlobalWind) at the tuning's breeze speed.
+		command = ShipDrive.Spool(command, VehicleSeat.Throttle, dt, tuning)
+		local wind = Vector3.new(workspace.GlobalWind.X, 0, workspace.GlobalWind.Z)
+		local trueWind = if wind.Magnitude > 1e-3 then wind.Unit * tuning.WindSpeed else Vector3.zero
+		-- A hull with a Sail model is sail-driven. Hulls without one get no sail term.
+		local sailAccel = if Ship:FindFirstChild("Sail") then (Ship:GetAttribute("SailAccel") or tuning.SailAccel) else 0
+		local accel = ShipDrive.Acceleration(velocity, forward, right, command, dt, trueWind, sailAccel, tuning)
+		drive.Force = accel * Main.AssemblyMass
 	else
-		linearVelocity.VectorVelocity = Vector3.zero
+		command = 0
+		drive.Force = Vector3.zero
 	end
 
 	-- Analytic surface (the Gerstner sum the ocean mesh is displaced with), so
@@ -202,7 +212,9 @@ RunService.PostSimulation:Connect(function(dt)
 		local here = moverAttachment.WorldPosition
 		alignPosition.Enabled = true
 		alignPosition.MaxAxesForce = Vector3.new(0, maxForce * (1 + (depth / 10)), 0)
-		alignPosition.Position = Vector3.new(here.X, targetY, here.Z)
+		-- Draft (WoodenShip's attribute, 0 on Boat) lowers the goal so the hull sits
+		-- under the surface like the Boat does.
+		alignPosition.Position = Vector3.new(here.X, targetY - (Ship:GetAttribute("Draft") or 0), here.Z)
 	else
 		alignPosition.Enabled = false
 	end

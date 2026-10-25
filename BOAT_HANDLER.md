@@ -132,3 +132,32 @@ not stop an island from physically pushing the boat upward. The boat must not
 collide with island geometry if it is meant to stay on the water. If the boat
 should still collide with docks or other objects, put those objects in a third
 collision group rather than setting `Boat` to non-collidable globally.
+
+## Current drive model (`ShipDrive`)
+
+The snippets above are the legacy port. The live drive is in
+`src/ReplicatedStorage/ShipHandling/ShipDrive.luau`, used by both
+`Ship.Client` (the driver's machine) and `Ship.Handler` (the server, while
+unmanned). It replaces the old instant `LinearVelocity` throttle with forces, so
+the hull accelerates, coasts, brakes and sails by Newton's laws:
+
+- **Throttle** (`VehicleSeat.Throttle`) spools toward its input at
+  `ThrottleSpool` per second before it reaches the engine.
+- **Engine**: constant thrust (`EngineAccel` ahead, `ReverseAccel` astern). Quadratic
+  and linear drag set the top speed (about 29 studs/s ahead with the defaults).
+- **Coasting and braking**: releasing the throttle lets the hull coast down. Throttle
+  against the motion brakes harder (`BrakeAccel`), without overshooting zero.
+- **Keel**: `LateralDamping` removes sideways speed, so the hull tracks its heading.
+- **Sail** (hulls with a `Sail` child only, currently `Boat`): thrust from the
+  apparent wind (`workspace.GlobalWind` direction at `WindSpeed`, minus the hull's
+  own velocity). Nothing in irons, best on a beam reach, a little less dead downwind.
+  Small leeway, damped by the keel. The sail mesh does not trim visually yet.
+- **Rudder**: `MaxTurnRate` scaled by forward speed over `TurnReferenceSpeed`, so a
+  stopped hull does not spin. Reversing turns the bow the other way.
+- **Unmanned**: the server applies drag only, so an abandoned hull coasts to a stop.
+- **Draft**: the `Draft` attribute lowers the buoyancy goal (0 on `Boat`, 5.5 on
+  `WoodenShip`).
+
+Tuning lives in `ShipDrive.Defaults`. The sail value was set by a sweep, with a
+14 studs/s breeze: beam reach about 17, downwind about 6, close-hauled about 5.5
+studs/s. `WoodenShip` has no `Sail` child and so is engine-only.
