@@ -17,6 +17,7 @@ local RunService = game:GetService("RunService")
 
 local WaveFloat = require(ReplicatedStorage.FloatingObjectGeneration.WaveFloat)
 local FishPose = require(script.Parent.FishPose)
+local FishingSounds = require(ReplicatedStorage.Fishing.FishingSounds)
 
 local tool = script.Parent
 local rod = tool:WaitForChild("Rod")
@@ -34,7 +35,7 @@ local MIN_CAST = 8           -- closer than this does nothing
 local BITE_WAIT_MIN = 3.5
 local BITE_WAIT_MAX = 7
 local APPROACH = 2.2         -- seconds for the fish to reach the bobber (viewport timing)
-local BIT_TO_CAUGHT = 1.0    -- pause between "Bit bait!" and the catch
+local HOOK_WINDOW = 3.0      -- after the bait is taken, seconds the player has to click (one click for now)
 local SCALE_MIN = 0.8
 local SCALE_MAX = 1.3
 local THROW_BACK = 24        -- studs/s thrown behind the player
@@ -85,6 +86,50 @@ bobber.CanQuery = false
 bobber.CanTouch = false
 bobber.Massless = true
 local bobberYaw = 0
+
+-- Effects: the bobber carries a splash and a bubble emitter (created once, reused).
+local function makeEmitter(parent: Instance, name: string, props: { [string]: any }): ParticleEmitter
+	local e = parent:FindFirstChild(name)
+	if e == nil or not e:IsA("ParticleEmitter") then
+		e = Instance.new("ParticleEmitter")
+		e.Name = name
+		e.Parent = parent
+	end
+	e.Enabled = false
+	e.Rate = 0
+	e.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	for k, v in pairs(props) do
+		(e :: any)[k] = v
+	end
+	return e
+end
+
+local fxAttach = bobber:FindFirstChild("FxAttach")
+if fxAttach == nil then
+	fxAttach = Instance.new("Attachment")
+	fxAttach.Name = "FxAttach"
+	fxAttach.Parent = bobber
+end
+local splashFx = makeEmitter(fxAttach, "Splash", {
+	Lifetime = NumberRange.new(0.4, 0.8),
+	Speed = NumberRange.new(6, 11),
+	SpreadAngle = Vector2.new(70, 70),
+	EmissionDirection = Enum.NormalId.Top,
+	Color = ColorSequence.new(Color3.fromRGB(200, 235, 255)),
+	Size = NumberSequence.new(0.5, 0.1),
+	Transparency = NumberSequence.new(0.2, 1),
+	Acceleration = Vector3.new(0, -25, 0),
+	LightEmission = 0.5,
+})
+local bubbleFx = makeEmitter(fxAttach, "Bubbles", {
+	Lifetime = NumberRange.new(0.8, 1.4),
+	Speed = NumberRange.new(2, 4),
+	SpreadAngle = Vector2.new(20, 20),
+	EmissionDirection = Enum.NormalId.Top,
+	Color = ColorSequence.new(Color3.fromRGB(230, 250, 255)),
+	Size = NumberSequence.new(0.25, 0.15),
+	Transparency = NumberSequence.new(0.3, 1),
+})
 
 -- Rope: both ends anchored, so it cannot pull on anything physical.
 rope.Attachment0 = anchorAttach
@@ -175,7 +220,7 @@ end
 
 -- Bite -----------------------------------------------------------------------
 local function catchFish(player: Player, id: number)
-	if id ~= castId or state ~= "biting" or biteTemplate == nil then
+	if id ~= castId or state ~= "hook" or biteTemplate == nil then
 		return
 	end
 	local hrp = hrpOf(player)
@@ -248,6 +293,16 @@ local function catchFish(player: Player, id: number)
 	primary.AssemblyAngularVelocity = Vector3.new(math.random() * 4 - 2, math.random() * 4 - 2, math.random() * 4 - 2)
 
 	clearPreview()
+	-- Splash and catch sound come from the fish itself.
+	local splashAt = Instance.new("Attachment")
+	splashAt.Parent = primary
+	local burst = splashFx:Clone()
+	burst.Parent = splashAt
+	burst:Emit(30)
+	task.delay(2, function()
+		splashAt:Destroy()
+	end)
+	FishingSounds.Play(primary, FishingSounds.Caught, 1, 90)
 	fishEvent:FireClient(player, "Caught", template.Name)
 
 	task.delay(CATCH_HOLD, function()
@@ -299,8 +354,21 @@ local function startBite(player: Player, id: number)
 	state = "biting"
 	fishEvent:FireClient(player, "Bite", template.Name, scale, APPROACH)
 
-	task.delay(APPROACH + BIT_TO_CAUGHT, function()
-		catchFish(player, id)
+	-- Contact: the fish has taken the bait. The player has HOOK_WINDOW seconds to click.
+	task.delay(APPROACH, function()
+		if id ~= castId or state ~= "biting" then
+			return
+		end
+		state = "hook"
+		FishingSounds.Play(bobber, FishingSounds.TookBait, 1, 80)
+		bubbleFx:Emit(12)
+		task.delay(HOOK_WINDOW, function()
+			if id ~= castId or state ~= "hook" then
+				return
+			end
+			-- Missed the hook: the fish gets away.
+			resetRod("GotAway")
+		end)
 	end)
 end
 
@@ -359,6 +427,7 @@ local function onCast(player: Player, target: any)
 	rope.Visible = true
 	rope.Length = flyRopeStart
 	placeBobber(origin)
+	FishingSounds.Play(tip, FishingSounds.Cast, 0.9, 60)
 
 	task.delay(flyDur + 0.05, function()
 		if id ~= castId or state ~= "flying" then
@@ -367,6 +436,9 @@ local function onCast(player: Player, target: any)
 		state = "floating"
 		bobX, bobY, bobZ = flyGoal.X, flyGoal.Y, flyGoal.Z
 		bobVy = 0
+		-- The bobber touches the water: splash and water sound.
+		splashFx:Emit(24)
+		FishingSounds.Play(bobber, FishingSounds.BobberSplash, 0.9, 60)
 		local wait = BITE_WAIT_MIN + math.random() * (BITE_WAIT_MAX - BITE_WAIT_MIN)
 		task.delay(wait, function()
 			startBite(player, id)
@@ -472,6 +544,12 @@ end
 action.OnServerEvent:Connect(function(player: Player, kind: any, arg: any)
 	if kind == "Cast" then
 		onCast(player, arg)
+	elseif kind == "Hook" then
+		-- Only counts once the fish has taken the bait, and only for the player who cast.
+		if state == "hook" and castPlayer == player then
+			FishingSounds.Play(bobber, FishingSounds.HookClick, 1, 60)
+			catchFish(player, castId)
+		end
 	elseif kind == "DragStart" then
 		startDrag(player, arg)
 	elseif kind == "DragMove" then

@@ -31,6 +31,7 @@ local CANCEL_TEXT = {
 	BadFish = "Cast failed.",
 	Busy = "Already fishing.",
 	TooClose = "Cast further out.",
+	GotAway = "It got away...",
 	Unequipped = "",
 }
 
@@ -60,7 +61,14 @@ local scene = Instance.new("Model")
 scene.Name = "FishScene"
 scene.Parent = viewport
 
+local WIGGLE_SPEED = 7       -- radians per second
+local WIGGLE_SIDE = 0.6      -- studs of side-to-side travel
+local WIGGLE_YAW = 14        -- degrees of swing
+
 local sceneActive = false
+local hookReady = false      -- true from contact until caught, lost, or hidden
+local wriggleOn = false
+local wriggleT0 = 0
 local bobberClone: BasePart? = nil
 local fish: Model? = nil
 local fishName = ""
@@ -138,6 +146,8 @@ end
 local function hideUi()
 	hideToken += 1
 	sceneActive = false
+	hookReady = false
+	wriggleOn = false
 	gui.Enabled = false
 	clearScene()
 end
@@ -198,6 +208,8 @@ local function onCaught(name: string)
 	if not sceneActive then
 		return
 	end
+	hookReady = false
+	wriggleOn = false
 	reactive.Text = name .. " Caught!"
 	local token = hideToken
 	task.delay(HIDE_AFTER_CATCH, function()
@@ -208,6 +220,8 @@ local function onCaught(name: string)
 end
 
 local function onCancel(reason: string)
+	hookReady = false
+	wriggleOn = false
 	local text = CANCEL_TEXT[reason] or "Cast failed."
 	if text == "" then
 		hideUi()
@@ -242,8 +256,39 @@ RunService.RenderStepped:Connect(function()
 		local bp = bobberClone:FindFirstChild("BobberPoint") :: Attachment
 		if mouth and bp and (mouth.WorldPosition - bp.WorldPosition).Magnitude < CONTACT_DISTANCE then
 			contacted = true
+			hookReady = true
+			wriggleT0 = os.clock()
+			wriggleOn = true
 			reactive.Text = fishName .. " Bit bait!"
+			-- Bubbles where the fish bit the bobber.
+			local bubbleAt = bobberClone:FindFirstChild("BobberPoint") :: Attachment
+			if bubbleAt then
+				local bubbles = Instance.new("ParticleEmitter")
+				bubbles.Enabled = false -- burst only: Emit() below, no continuous stream
+				bubbles.Rate = 0
+				bubbles.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+				bubbles.Lifetime = NumberRange.new(0.8, 1.4)
+				bubbles.Speed = NumberRange.new(2, 4)
+				bubbles.SpreadAngle = Vector2.new(25, 25)
+				bubbles.EmissionDirection = Enum.NormalId.Top
+				bubbles.Color = ColorSequence.new(Color3.fromRGB(230, 250, 255))
+				bubbles.Size = NumberSequence.new(0.25, 0.15)
+				bubbles.Transparency = NumberSequence.new(0.3, 1)
+				bubbles.Parent = bubbleAt
+				bubbles:Emit(14)
+				task.delay(2, function()
+					bubbles:Destroy()
+				end)
+			end
 		end
+	end
+
+	-- Wriggle: once the fish has bitten, it swings side to side until it is caught or lost.
+	if fish and wriggleOn and endPivot then
+		local phase = (os.clock() - wriggleT0) * WIGGLE_SPEED
+		fish:PivotTo(endPivot
+			* CFrame.new(WIGGLE_SIDE * math.sin(phase), 0, 0)
+			* CFrame.Angles(0, math.rad(WIGGLE_YAW) * math.sin(phase), 0))
 	end
 end)
 
@@ -295,6 +340,11 @@ local lastDragSend = 0
 local castSerial = 0
 
 tool.Activated:Connect(function()
+	-- Fish has taken the bait: this click sets the hook (one click for now).
+	if hookReady then
+		action:FireServer("Hook")
+		return
+	end
 	if dragFish or sceneActive then
 		return
 	end
