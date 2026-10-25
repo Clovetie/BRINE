@@ -61,9 +61,8 @@ local scene = Instance.new("Model")
 scene.Name = "FishScene"
 scene.Parent = viewport
 
-local WIGGLE_SPEED = 7       -- radians per second
-local WIGGLE_SIDE = 0.6      -- studs of side-to-side travel
-local WIGGLE_YAW = 14        -- degrees of swing
+local WIGGLE_SPEED = 8       -- radians per second (about 1.3 swings a second)
+local WIGGLE_YAW = 30        -- degrees of swing either side, about the bite point
 
 local sceneActive = false
 local hookReady = false      -- true from contact until caught, lost, or hidden
@@ -108,6 +107,7 @@ local function clearScene()
 	startPivot = nil
 	endPivot = nil
 	contacted = false
+	wriggleOn = false
 	if approachTween then
 		approachTween:Cancel()
 		approachTween = nil
@@ -136,6 +136,8 @@ local function buildScene()
 		b.CanQuery = false
 		b.CanTouch = false
 		b.AssemblyLinearVelocity = Vector3.zero
+		-- Yaw-only identity orientation, the same as the server's float pose, so the
+		-- 3-stud axis runs the same way in the viewport as on the water.
 		b.CFrame = CFrame.new(0, 0.1, 0) -- sits on the water surface, not moved again
 		b.Parent = scene
 		bobberClone = b
@@ -251,14 +253,19 @@ RunService.RenderStepped:Connect(function()
 		return
 	end
 	-- The viewport bobber is static: no bob, no sway (it is set once in buildScene).
+	-- The wriggle starts as soon as the fish arrives, so it does not depend on the
+	-- contact distance check below.
+	if fish and not wriggleOn and approachAlpha.Value >= 0.999 and endPivot then
+		wriggleT0 = os.clock()
+		wriggleOn = true
+	end
+
 	if fish and bobberClone and not contacted and approachAlpha.Value >= 0.999 then
 		local mouth = fish:FindFirstChild("BobberPos", true) :: Attachment
 		local bp = bobberClone:FindFirstChild("BobberPoint") :: Attachment
 		if mouth and bp and (mouth.WorldPosition - bp.WorldPosition).Magnitude < CONTACT_DISTANCE then
 			contacted = true
 			hookReady = true
-			wriggleT0 = os.clock()
-			wriggleOn = true
 			reactive.Text = fishName .. " Bit bait!"
 			-- Bubbles where the fish bit the bobber.
 			local bubbleAt = bobberClone:FindFirstChild("BobberPoint") :: Attachment
@@ -284,11 +291,19 @@ RunService.RenderStepped:Connect(function()
 	end
 
 	-- Wriggle: once the fish has bitten, it swings side to side until it is caught or lost.
-	if fish and wriggleOn and endPivot then
-		local phase = (os.clock() - wriggleT0) * WIGGLE_SPEED
-		fish:PivotTo(endPivot
-			* CFrame.new(WIGGLE_SIDE * math.sin(phase), 0, 0)
-			* CFrame.Angles(0, math.rad(WIGGLE_YAW) * math.sin(phase), 0))
+	-- The fish swings left and right around its bite point (BobberPos), so the mouth
+	-- stays on the bobber while the body and tail swing through the viewport.
+	if fish and wriggleOn and endPivot and bobberClone then
+		local bp = bobberClone:FindFirstChild("BobberPoint") :: Attachment
+		if bp then
+			local phase = (os.clock() - wriggleT0) * WIGGLE_SPEED
+			local swing = math.rad(WIGGLE_YAW) * math.sin(phase)
+			local mouthWorld = bp.WorldPosition
+			local base = endPivot - endPivot.Position          -- rotation only
+			local rot = CFrame.Angles(0, swing, 0) * base       -- yaw about the vertical
+			local mouthLocal = endPivot:PointToObjectSpace(mouthWorld)
+			fish:PivotTo(CFrame.new(mouthWorld - rot:VectorToWorldSpace(mouthLocal)) * rot)
+		end
 	end
 end)
 

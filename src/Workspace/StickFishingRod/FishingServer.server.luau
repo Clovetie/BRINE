@@ -49,6 +49,11 @@ local DRAG_RANGE = 22        -- how far a dragged fish may be from the player
 local DRAG_LEASH = 40        -- auto-release beyond this distance
 local FALLBACK_SEA = 24.98
 local SLACK = 2              -- extra rope length beyond the bobber distance
+local FLOAT_K = 6            -- caught fish: spring stiffness toward the water line
+local FLOAT_D = 5            -- caught fish: damping (about critical for K = 6)
+local FLOAT_DEPTH = 0.5      -- caught fish: centre rides this far below the surface
+local FLOAT_DRAG = 1.2       -- caught fish: horizontal drag while in the water (1/s)
+local FLOAT_REACH = 3        -- buoyancy applies at or below sea level + this margin
 
 -- Remotes --------------------------------------------------------------------
 local remotes = tool:FindFirstChild("FishingRemotes")
@@ -138,7 +143,7 @@ rope.Enabled = false
 rope.Visible = false
 
 -- Rest pose: bobber hangs at the rod tip (scripted, not welded).
-local restLocal = CFrame.new(0, 0.4, 0)
+local REST_LIFT = 0.4
 
 -- State ----------------------------------------------------------------------
 -- idle -> flying -> floating -> biting -> caught -> idle
@@ -218,6 +223,38 @@ local function resetRod(reason: string?)
 	castPlayer = nil
 end
 
+-- Caught fish: buoyancy ------------------------------------------------------------
+-- While a caught fish is at or below the surface, a VectorForce spring holds its
+-- centre near the water line, horizontal water drag slows it, and an AlignOrientation
+-- keeps it upright (yaw only) unless a player is dragging it. In the air it falls normally.
+local floaters = {}
+
+local function updateFloaters()
+	local g = workspace.Gravity
+	for i = #floaters, 1, -1 do
+		local f = floaters[i]
+		local root = f.primary
+		if f.fish.Parent == nil or root.Parent == nil then
+			table.remove(floaters, i)
+		else
+			local pos = root.Position
+			local sea = seaAt(pos)
+			if pos.Y < sea + FLOAT_REACH then
+				local mass = root.AssemblyMass
+				local vel = root.AssemblyLinearVelocity
+				local acc = FLOAT_K * (sea - FLOAT_DEPTH - pos.Y) - FLOAT_D * vel.Y
+				f.buoy.Force = Vector3.new(-FLOAT_DRAG * mass * vel.X, mass * (g + acc), -FLOAT_DRAG * mass * vel.Z)
+				local _, yaw = root.CFrame:ToOrientation()
+				f.upright.CFrame = CFrame.Angles(0, yaw, 0)
+				f.upright.Enabled = f.fish:GetAttribute("DraggedBy") == nil
+			else
+				f.buoy.Force = Vector3.zero
+				f.upright.Enabled = false
+			end
+		end
+	end
+end
+
 -- Bite -----------------------------------------------------------------------
 local function catchFish(player: Player, id: number)
 	if id ~= castId or state ~= "hook" or biteTemplate == nil then
@@ -268,6 +305,23 @@ local function catchFish(player: Player, id: number)
 			p.Anchored = false
 		end
 	end
+
+	local buoyAt = Instance.new("Attachment")
+	buoyAt.Name = "BuoyAttach"
+	buoyAt.Parent = primary
+	local buoy = Instance.new("VectorForce")
+	buoy.Attachment0 = buoyAt
+	buoy.RelativeTo = Enum.ActuatorRelativeTo.World
+	buoy.ApplyAtCenterOfMass = true
+	buoy.Force = Vector3.zero
+	buoy.Parent = primary
+	local upright = Instance.new("AlignOrientation")
+	upright.Attachment0 = buoyAt
+	upright.Responsiveness = 8
+	upright.MaxTorque = math.max(primary.AssemblyMass, 1) * workspace.Gravity * 0.5
+	upright.Enabled = false
+	upright.Parent = primary
+	table.insert(floaters, { fish = fish, primary = primary, buoy = buoy, upright = upright })
 
 	-- A caught fish is dead: eyes go black and smooth plastic.
 	fish:SetAttribute("Caught", true)
@@ -574,9 +628,11 @@ end)
 
 RunService.Heartbeat:Connect(function(dt)
 	anchor.CFrame = CFrame.new(tip.WorldPosition)
+	updateFloaters()
 
 	if state == "idle" then
-		bobber.CFrame = tip.WorldCFrame * restLocal
+		-- Yaw-only, like the water pose: the bobber does not inherit the rod tip rotation.
+		bobber.CFrame = CFrame.new(tip.WorldPosition + Vector3.new(0, REST_LIFT, 0)) * CFrame.Angles(0, bobberYaw, 0)
 
 	elseif state == "flying" then
 		local alpha = math.clamp((os.clock() - flyT0) / flyDur, 0, 1)
