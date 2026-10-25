@@ -151,8 +151,8 @@ FloatingObjectConfig.Placement = {
 	Density = {
 		Enabled = true,
 		Scale = 1400,
-		MinChance = 0.15,
-		MaxChance = 0.75,
+		MinChance = 0.06,
+		MaxChance = 0.45,
 	},
 
 	-- Keep this radius around world origin object-free (spawn safety).
