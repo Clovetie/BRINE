@@ -23,7 +23,10 @@ end
 
 registerCollisionGroup("Ship")
 registerCollisionGroup("ShipIsland")
-PhysicsService:CollisionGroupSetCollidable("Ship", "ShipIsland", false)
+-- Fixed islands block the hull. The anti-climb guard below stops
+-- the hull riding up them; the pair used to be non-collidable, which let ships
+-- pass through islands instead.
+PhysicsService:CollisionGroupSetCollidable("Ship", "ShipIsland", true)
 
 local function markIsland(instance: Instance)
 	if instance:IsA("BasePart") then
@@ -151,6 +154,29 @@ local function setUnmanned(active: boolean)
 	buoyancy.Enabled = active
 	orientation.Enabled = active
 end
+
+-- Anti-climb (ship must not ride up fixed objects). While the hull touches a part
+-- outside the ship and is moving up, cancel the upward velocity. Fixed objects
+-- block the hull; the buoyancy servo still settles it on the water.
+local function touchingOutside(): boolean
+	for _, instance in ipairs(Ship:GetDescendants()) do
+		if instance:IsA("BasePart") and instance.CanCollide then
+			for _, other in ipairs(instance:GetTouchingParts()) do
+				if not other:IsDescendantOf(Ship) then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+RunService.PostSimulation:Connect(function()
+	local v = Main.AssemblyLinearVelocity
+	if v.Y > 0 and touchingOutside() then
+		Main.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+	end
+end)
 
 RunService.PostSimulation:Connect(function(dt)
 	if VehicleSeat.Occupant ~= nil then

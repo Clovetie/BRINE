@@ -304,8 +304,13 @@ boat, reads the water height at each (via `HeightLookup.Lookup`), and returns:
 - Clones the `Client` LocalScript into the occupant's `PlayerGui` (so the driver
   only sees it).
 - Registers collision groups `Ship` / `ShipIsland`, marks `workspace.Map`
-  descendants as `ShipIsland`, and disables `Ship`↔`ShipIsland` collision so the
-  boat cannot climb islands.
+  descendants as `ShipIsland`, and keeps `Ship`↔`ShipIsland` collision on so
+  fixed islands block the hull. Ships used to pass through islands because this
+  pair was non-collidable. Set it back only with the anti-climb guard in place.
+- Anti-climb guard (Handler and Client): while the hull touches a part outside the
+  ship and is moving up, the upward velocity is cancelled. The Client runs it on
+  the driver's machine, because the driver owns the hull while aboard. Unanchored
+  objects are pushed by the bow, as normal physics. Fixed objects block.
 
 **Contribution to the whole:** turns water height into a functioning, driveable
 floating boat that respects islands.

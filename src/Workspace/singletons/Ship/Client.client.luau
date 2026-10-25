@@ -121,6 +121,30 @@ local zoneAccumulated = 0
 local currentRotation = 0
 updateZoneMultipliers()
 
+-- Anti-climb (same rule as the Handler). The driver's machine owns the hull while
+-- someone is aboard, so the guard runs here: while the hull touches a part outside
+-- the ship and is moving up, cancel the upward velocity.
+local shipModel = VehicleSeat.Parent :: Instance
+local function touchingOutside(): boolean
+	for _, instance in ipairs(shipModel:GetDescendants()) do
+		if instance:IsA("BasePart") and instance.CanCollide then
+			for _, other in ipairs(instance:GetTouchingParts()) do
+				if not other:IsDescendantOf(shipModel) then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+RunService.PostSimulation:Connect(function()
+	local v = Main.AssemblyLinearVelocity
+	if v.Y > 0 and touchingOutside() then
+		Main.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+	end
+end)
+
 RunService.PostSimulation:Connect(function(dt)
 	RefreshForceLimits()
 	zoneAccumulated += dt
