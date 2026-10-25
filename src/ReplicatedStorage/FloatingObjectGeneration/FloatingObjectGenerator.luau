@@ -1733,6 +1733,13 @@ local function recordHasInterest(record, now: number): (boolean, boolean)
 	record.nearestSq = nearestSq
 	updateSimBand(record, nearestSq)
 
+	-- Keep a clear ring around each player (Streaming.MinPlayerDistance).
+	local minDistance = streamingConfig.MinPlayerDistance or 0
+	if nearestSq < minDistance * minDistance then
+		record.unseenSince = nil
+		return false, false
+	end
+
 	if nearestSq > cacheDistance * cacheDistance then
 		return false, false
 	end

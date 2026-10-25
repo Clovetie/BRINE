@@ -194,8 +194,9 @@ FloatingObjectConfig.Streaming = {
 	-- created only while a player can see them, then cached again.
 	Enabled = true,
 
-	-- How far from each player cells are generated/cached.
-	GenerationRadius = 1700,
+	-- How far from each player cells are generated/cached. Islands use 2600;
+	-- objects sit a bit closer so the sea is not overrun.
+	GenerationRadius = 2200,
 
 	-- Background-loop pacing. Work is capped/yielded per cycle.
 	GenerationInterval = 1.25,
@@ -212,7 +213,12 @@ FloatingObjectConfig.Streaming = {
 
 	-- Beyond this player distance a rendered object is cached immediately
 	-- (nobody can see it). Should be >= the largest class SimDistance.
-	CacheDistance = 650,
+	CacheDistance = 900,
+
+	-- No object renders within this distance of a player. Objects in that ring
+	-- stay cached and appear once the player moves farther away. This keeps the
+	-- area right around a boat clear of debris.
+	MinPlayerDistance = 200,
 
 	-- A rendered object that is close enough to see but is NOT inside any
 	-- player's camera view cone is cached after this many seconds of being
@@ -229,7 +235,7 @@ FloatingObjectConfig.Streaming = {
 	-- Camera interest settings. Clients report their camera position + look
 	-- direction through the CameraReport RemoteEvent; stale reports older
 	-- than CameraDataTimeout fall back to distance-only interest.
-	CameraMaxDistance = 800,
+	CameraMaxDistance = 900,
 	CameraViewConeAngleDeg = 55, -- half-angle; 55 deg ~= 110 deg cone
 	CameraDataTimeout = 3,
 	CameraMinReportInterval = 0.15, -- server-side rate limit per player

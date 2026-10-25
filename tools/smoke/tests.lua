@@ -289,6 +289,10 @@ Players._players[1] = player
 -- ---------------------------------------------------------------------------
 local Gen = luauRequire(generatorInst)
 local Config = luauRequire(configInst)
+-- The buoyancy checks park the player on a rig. The placement ring
+-- (Streaming.MinPlayerDistance) keeps objects this close uncached, so the
+-- buoyancy checks run with the ring off. Section 18 covers the ring itself.
+Config.Streaming.MinPlayerDistance = 0
 
 -- 1. Catalog discovery + tag classification
 local catalog = Gen.GetCatalog()
@@ -671,6 +675,18 @@ if rigHull then
 	end
 	check(stillOwned == 0, "switching back to the server releases every owned assembly")
 end
+
+-- 18. Clear ring around the player ----------------------------------------------
+-- Park the player on a rendered object with the ring on: the object must be
+-- cached (its model destroyed) rather than kept in the world.
+Config.Streaming.MinPlayerDistance = 200
+local ringTarget = buoyantModelNear(rootPart.Position, 6)
+if ringTarget then
+	rootPart.CFrame = CFrame.new(ringTarget.PrimaryPart.Position.X, 25, ringTarget.PrimaryPart.Position.Z)
+	pumpFrames(30)
+	check(ringTarget.Parent == nil, "an object inside MinPlayerDistance of a player is cached, not rendered")
+end
+Config.Streaming.MinPlayerDistance = 0
 
 print(("SUMMARY passed=%d failed=%d buoyCalls=%d lookups=%d"):format(TESTS.passed, TESTS.failed, BUOY_CALLS, LOOKUP_CALLS))
 
