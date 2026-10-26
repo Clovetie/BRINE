@@ -69,6 +69,14 @@ end)
 local MURK_DEPTH = 3
 local MURK_FOG_END = 120
 local MURK_FOG_COLOR = Color3.fromRGB(18, 80, 96)
+-- Horizon haze: the wave mesh ends about 936 studs from the camera, where the flat outer tiles
+-- start at a fixed waterline. The waves there are up to about 4 studs off that line, so the
+-- edge would show as a moving step. Fog ends before it, so the edge sits inside the haze.
+local HORIZON_FOG_START = 500
+local HORIZON_FOG_END = 880
+Lighting.FogStart = HORIZON_FOG_START
+Lighting.FogEnd = HORIZON_FOG_END
+local fogStartDefault = Lighting.FogStart
 local fogEndDefault = Lighting.FogEnd
 local fogColorDefault = Lighting.FogColor
 local lastMurk = 0
@@ -311,6 +319,7 @@ RunService.PreSimulation:Connect(function(dt)
 		lastMurk = murk
 		local closing = (1 - murk) ^ 3
 		Lighting.FogEnd = MURK_FOG_END + (fogEndDefault - MURK_FOG_END) * closing
+		Lighting.FogStart = fogStartDefault * closing
 		Lighting.FogColor = fogColorDefault:Lerp(MURK_FOG_COLOR, murk)
 		local reverb = if murk > 0.5 then Enum.ReverbType.UnderWater else Enum.ReverbType.NoReverb
 		if SoundService.AmbientReverb ~= reverb then
