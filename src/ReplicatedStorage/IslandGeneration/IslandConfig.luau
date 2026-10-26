@@ -214,9 +214,11 @@ IslandConfig.Rising = {
 	EasingStyle = Enum.EasingStyle.Quad,
 	EasingDirection = Enum.EasingDirection.Out,
 
-	-- Placeholder rise SFX. Replace the zero with your uploaded sound id.
-	SoundId = "rbxassetid://0",
-	SoundVolume = 0.8,
+	-- Rise SFX. Was a placeholder ("rbxassetid://0" at 0.8), which meant a build
+	-- from the repo played nothing and logged a load failure; these are the ids
+	-- and levels the live place has been running (synced 2026-10-26).
+	SoundId = "rbxassetid://9119681553",
+	SoundVolume = 2.5,
 	SoundRollOffMaxDistance = 500,
 	SoundCleanupDelay = 12,
 }
@@ -246,9 +248,9 @@ IslandConfig.Despawn = {
 	EasingStyle = Enum.EasingStyle.Quad,
 	EasingDirection = Enum.EasingDirection.In,
 
-	-- Placeholder sink SFX. Replace the zero with your uploaded sound id.
-	SoundId = "rbxassetid://0",
-	SoundVolume = 0.8,
+	-- Sink SFX, synced from the live place (2026-10-26). Same placeholder story.
+	SoundId = "rbxassetid://1056170474",
+	SoundVolume = 1.15,
 	SoundRollOffMaxDistance = 500,
 	SoundCleanupDelay = 12,
 }
