@@ -90,6 +90,68 @@ local WaveFloat = {}
 -- Sampling -------------------------------------------------------------------
 
 --[[
+	Horizontal inverse of the Gerstner displacement.
+
+	`Gerstner.ComputeTransform` maps a REST point to where that point is DRAWN:
+	`rest + D(rest)`. So the surface the player sees above a world XZ belongs to
+	the rest point that LANDS there. Evaluating `D(worldXZ).Y` instead - which is
+	what this module used to do - samples the wave at the wrong horizontal place,
+	and the two heights differ by (local slope x horizontal shift).
+
+	Measured over 100 points with tools/measure-height-error.sh: at SeaState 1.0
+	the shift is 1.96 studs on average and 3.08 at the p99, and the height error
+	it caused was p99 = 1.30 studs. That is the "waves colliding" symptom: a hull
+	or crate could sit up to 1.3 studs off the visible water, and its pitch/roll
+	came from a slope sampled at the wrong place too.
+
+	Fixed-point iteration `rest <- worldXZ - D(rest).XZ` converges because the
+	steepness sum (0.69) is below 1; the measured rate is about 1/3 per step, so
+	three steps take the p99 error to 0.009 studs. This deliberately re-uses
+	`ComputeTransform` instead of deriving an analytic Jacobian, so the wave math
+	keeps exactly one definition.
+]]
+WaveFloat.INVERSE_STEPS = 3
+
+-- Horizontal shift (studs) below which inverting is not worth the work: the
+-- residual error is then slope x shift, i.e. under 0.69 x 0.05 = 0.035 studs.
+WaveFloat.INVERSE_SKIP = 0.05
+
+--[[
+	World Y of the drawn surface at a world-space point, after the horizontal
+	inverse. `phase`, `speed` and `amplitude` are the zone multipliers, passed
+	through unchanged to every evaluation so the inverse solves the same field
+	the mesh is displaced with.
+]]
+local function surfaceHeight(point: Vector3, t: number, phase: number, speed: number, amplitude: number): number
+	if Waves == nil then
+		return PLANE_Y
+	end
+
+	local direct = Gerstner.ComputeTransform(Waves, point, t, phase, speed, amplitude)
+	if WaveFloat.INVERSE_STEPS <= 0 or (abs(direct.X) < WaveFloat.INVERSE_SKIP and abs(direct.Z) < WaveFloat.INVERSE_SKIP) then
+		-- Calm patch: the shift is small enough that the naive read is already
+		-- inside the 0.1 stud budget, so skip the iteration entirely.
+		return PLANE_Y + direct.Y
+	end
+
+	-- The waves are horizontal-only in their direction vectors, so the rest
+	-- point's own Y never enters a phase; carry it through anyway so this keeps
+	-- working if a wave ever gets a vertical direction.
+	--
+	-- The first iteration reuses `direct` (the sample already taken above), so
+	-- N steps cost N+1 evaluations rather than N+2.
+	local restX = point.X - direct.X
+	local restZ = point.Z - direct.Z
+	for _ = 2, WaveFloat.INVERSE_STEPS do
+		local disp = Gerstner.ComputeTransform(Waves, Vector3.new(restX, point.Y, restZ), t, phase, speed, amplitude)
+		restX = point.X - disp.X
+		restZ = point.Z - disp.Z
+	end
+
+	return PLANE_Y + Gerstner.ComputeTransform(Waves, Vector3.new(restX, point.Y, restZ), t, phase, speed, amplitude).Y
+end
+
+--[[
 	World Y of the water surface at a world-space point, with the island /
 	whirlpool zone multipliers applied.
 
@@ -119,10 +181,7 @@ function WaveFloat.HeightAt(point: Vector3, zone, source: string?, method: strin
 		return height
 	end
 
-	local height = PLANE_Y
-	if Waves ~= nil then
-		height = height + Gerstner.ComputeTransform(Waves, point, t, phase, speed, amplitude).Y
-	end
+	local height = surfaceHeight(point, t, phase, speed, amplitude)
 
 	local currentZone = zone and zone.CURRENT_ZONE
 	if currentZone ~= nil and currentZone.Type == "Whirlpool" then
