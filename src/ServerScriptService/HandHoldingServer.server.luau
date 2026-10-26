@@ -27,6 +27,10 @@ local REST_DISTANCE = config.REST_DISTANCE
 local SPRING_STRENGTH = config.SPRING_STRENGTH
 local PULL_DAMPING = config.PULL_DAMPING
 local MAX_PULL_FORCE = config.MAX_PULL_FORCE
+local OFFER_COOLDOWN = config.OFFER_COOLDOWN
+
+-- ROADMAP 5.3: when each player last started a new offer (os.clock seconds).
+local lastOfferAt: { [Player]: number } = {}
 
 local function assignCharacterCollisionGroup(character: Model)
 	local function assign(instance: Instance)
@@ -436,7 +440,13 @@ remoteEvent.OnServerEvent:Connect(function(player, action, target)
 		return
 	end
 
-	-- Otherwise store/replace this offer.
+	-- Otherwise store/replace this offer. New offers are rate-limited (ROADMAP
+	-- 5.3); accepting an existing offer above is not.
+	local now = os.clock()
+	if now - (lastOfferAt[player] or -math.huge) < OFFER_COOLDOWN then
+		return
+	end
+	lastOfferAt[player] = now
 	addOffer(player, targetPlayer)
 end)
 
@@ -444,8 +454,13 @@ end)
 -- Per-frame connection updates
 ----------------------------------------------------------------------------
 
+-- ROADMAP 5.1: one snapshot table reused every frame, instead of allocating a
+-- new one per Heartbeat.
+local heartbeatSnapshot: { any } = {}
+
 RunService.Heartbeat:Connect(function(dt)
-	local snapshot = {}
+	table.clear(heartbeatSnapshot)
+	local snapshot = heartbeatSnapshot
 	for connection in pairs(connections) do
 		table.insert(snapshot, connection)
 	end
@@ -562,6 +577,7 @@ local function cleanupPlayer(player)
 	forceDropConnection(connectionByPlayer[player])
 	cancelOffer(player)
 	cancelOffersToPlayer(player)
+	lastOfferAt[player] = nil
 end
 
 Players.PlayerRemoving:Connect(cleanupPlayer)

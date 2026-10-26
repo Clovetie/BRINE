@@ -70,7 +70,7 @@ and `HandHoldingServer` (~591).
 - **Streaming is budgeted** (cells per cycle, yields, cap on rendered islands).
 
 ### Weaknesses / risks
-- **No ocean renderer/orchestrator is present in the repo.** Many core functions
+- **The ocean renderer was missing from the repo (live-only). It is now synced at `StarterPlayerScripts/OceanParallel/` (ROADMAP 3.1–3.3).** Before the sync, many core functions
   (`Setup.SetupEditableMesh`, `Setup.SubdividePlane`,
   `Setup.SetupSecondaryPlanes`, `HeightLookup.ClientInit`, `Gerstner.SET_SETTINGS`,
   `Gerstner.ComputeTransformAndNormal`, `Helper.GetFrustumPlanes`, `Helper.IsInView`,
@@ -97,7 +97,9 @@ and `HandHoldingServer` (~591).
 
 ### 🔴 P0 — Blocking / deterministically wrong
 
-**B-1. `EditZone` is a `BindableEvent` but used as a `RemoteEvent`.**
+**B-1. `EditZone` is a `BindableEvent` but used as a `RemoteEvent`.** — ✅ *Fixed on `main`:* `EditZone.model.json` is now `RemoteEvent`; `validate-project.js` reports 0 errors.
+
+*(Original finding:)*
 `EditZone.model.json` declares `"className": "BindableEvent"`, yet
 `ZoneManager/init.luau` calls `script.EditZone:FireAllClients(...)` (server) and
 `script.EditZone.OnClientEvent:Connect(...)` (client). Neither exists on a
@@ -106,7 +108,7 @@ server or when the client tries to subscribe. **Fix:** change the class to
 `RemoteEvent` in `EditZone.model.json` (one word). (Noted in `README.md`; this is
 a required change, not optional.)
 
-**B-2. `Appearance` is a placeholder that breaks ocean rendering.**
+**B-2. `Appearance` is a placeholder that breaks ocean rendering.** _Status: model replaced (ROADMAP 0.2); PBR maps still to add._
 `Gerstner/Appearance.luau` returns `{}` and warns. `Setup.GetPlaneFromEditableMesh`
 and `Setup.SetupSecondaryPlanes` **clone it onto every ocean plane** as the
 material. With no `SurfaceAppearance`, ocean planes fall back to
@@ -114,7 +116,7 @@ material. With no `SurfaceAppearance`, ocean planes fall back to
 `SurfaceAppearance` (normal/roughness/metalness maps) and change the instance type
 from ModuleScript to SurfaceAppearance.
 
-**B-3. `HeightLookup.ClientInit` is never called → client buoyancy is -1.**
+**B-3. `HeightLookup.ClientInit` is never called → client buoyancy is -1.** *(Resolved: the ship moved to `WaveFloat` ANALYTIC in 2.4, and the live renderer calls `ClientInit` (Phase 3).)*
 On the client, `HeightLookup.Lookup` begins with:
 `if _PLANE == nil and IS_SERVER == false then warn(...); return -1`.
 `_PLANE`/`EditableMesh` are only ever set by `ClientInit`, which no module calls
@@ -184,7 +186,10 @@ moored boat far from the origin feels the pull. **Fix:** write
 `MaxAxesForce = (0, lift, 0)` so buoyancy has no horizontal authority at all —
 which is what `FloatingObjectGenerator`/`WaveFloat` do for the 500 props.
 Left unfixed here on purpose: the ship is the author's working code and this
-file records, not rewrites.
+file records, not rewrites. — ✅ *Fixed on `main` (ROADMAP 2.5):* the ship uses
+`PerAxis` + `World` with `MaxAxesForce = (0, lift, 0)`, and the goal's X/Z is the
+mover attachment's own column. (Not `Main.Position`: the mover sits on `VehicleSeat`,
+so `Main`'s X/Z would leave a constant horizontal offset.)
 
 **B-9. `VertexPositionToId` keyed by `Vector3` — fragile float keys.**
 `Setup` stores `VertexPositionToId[Position]` and `HeightLookup` reads it to get a
@@ -355,7 +360,7 @@ this, the ship floats on a constant −1 and the ocean is uncolored/unrendered.
 - Hoist `GetServerTimeNow()`.
 - `Octree` radius→size fix.
 - Ship buoyancy goal: keep the hull's own X/Z instead of `Vector3.new(0, Y, 0)`
-  (B-14). Done for floating objects via `WaveFloat`; still open for the boat.
+  (B-14). Done for floating objects via `WaveFloat` and for the boat (ROADMAP 2.4/2.5).
 - Floating-object buoyancy no longer samples `GetApproximateHeight` (`FAST`)
   and no longer skips the sample rig for small props — both were visible as
   props bobbing out of phase with the water and sitting dead level (fixed with

@@ -101,17 +101,28 @@ IslandConfig.Placement = {
 	WorldRadius = 2600,
 
 	-- Jittered-grid cell size; candidate positions are generated on this grid.
-	CellSize = 360,
+	CellSize = 440,
+
+	-- ROADMAP 7.1: archipelago density. A smooth noise field (broad wavelength
+	-- Scale, in studs) sets each cell's island chance between MinChance (open
+	-- water) and MaxChance (archipelago cores), so islands clump with gaps between
+	-- them. Enabled = false restores an even scatter.
+	Density = {
+		Enabled = true,
+		Scale = 1400,
+		MinChance = 0.25,
+		MaxChance = 0.9,
+	},
 
 	-- Random offset per cell, as a fraction of CellSize. Makes the grid look
 	-- organic instead of a rigid lattice.
-	GridJitter = 0.45,
+	GridJitter = 0.5,
 
 	-- Keep this radius around world origin island-free (spawn safety).
 	SpawnSafetyRadius = 320,
 
 	-- Extra gap added to (rA + rB) between island centers (island overlap pad).
-	SpacingPadding = 70,
+	SpacingPadding = 120,
 
 	-- How many times per grid cell the static fallback re-rolls position +
 	-- template before giving up on that cell.
@@ -123,8 +134,9 @@ IslandConfig.Placement = {
 	-- player does not permanently block a deterministic cached cell.
 	ObstaclePadding = 8,
 
-	-- Estimate of the largest possible premade island radius, used to widen the
-	-- octree overlap search so a big neighbour is never missed.
+	-- Octree overlap search reach (ROADMAP 4.2). Footprints up to this radius are
+	-- found by the octree; wider ones are checked directly, so no neighbour is
+	-- missed (premade islands can declare Radius above this value).
 	MaxIslandRadius = 400,
 
 	-- Anchor every BasePart of a placed island. Premade islands are authored in
@@ -165,6 +177,10 @@ IslandConfig.Streaming = {
 	-- amount actually in Workspace is kept at or below this cap except while a
 	-- near-player sink animation is finishing.
 	MaxRenderedIslands = 200,
+
+	-- Cap on cached cell records (ROADMAP 4.1). Only far, never-risen cells are
+	-- evicted; a returning player regenerates them from the same seed.
+	MaxCachedRecords = 3000,
 
 	-- If a boat/prop/baseplate blocks a deterministic candidate, retry later
 	-- instead of permanently burning that cell.

@@ -1,5 +1,11 @@
 # Boat handler update
 
+> **Status: implemented on `main`.** The buoyancy and mover setup described below live in
+> `src/Workspace/singletons/Ship/Client.client.luau` (the ship client now solves its
+> surface with `ReplicatedStorage.FloatingObjectGeneration.WaveFloat`, and `BoatManager`
+> is a compatibility adapter). The snippets below are kept as the reference for
+> porting a *legacy* BodyMover boat; the repo copy is the source of truth.
+
 The supplied boat client is using `BodyPosition`, `BodyGyro`, and `BodyVelocity`.
 Roblox marks all three legacy BodyMovers as deprecated; the supported replacements
 are `AlignPosition`, `AlignOrientation`, and `LinearVelocity` respectively.
@@ -126,3 +132,80 @@ not stop an island from physically pushing the boat upward. The boat must not
 collide with island geometry if it is meant to stay on the water. If the boat
 should still collide with docks or other objects, put those objects in a third
 collision group rather than setting `Boat` to non-collidable globally.
+
+## Current drive model (`ShipDrive`)
+
+The snippets above are the legacy port. The live drive is in
+`src/ReplicatedStorage/ShipHandling/ShipDrive.luau`, used by both
+`Ship.Client` (the driver's machine) and `Ship.Handler` (the server, while
+unmanned). It replaces the old instant `LinearVelocity` throttle with forces, so
+the hull accelerates, coasts, brakes and sails by Newton's laws:
+
+- **Throttle** (`VehicleSeat.Throttle`) spools toward its input at
+  `ThrottleSpool` per second before it reaches the engine.
+- **Engine**: constant thrust (`EngineAccel` ahead, `ReverseAccel` astern). Quadratic
+  and linear drag set the top speed (about 29 studs/s ahead with the defaults).
+- **Coasting and braking**: releasing the throttle lets the hull coast down. Throttle
+  against the motion brakes harder (`BrakeAccel`), without overshooting zero.
+- **Keel**: `LateralDamping` removes sideways speed, so the hull tracks its heading.
+- **Sail** (hulls with a `Sail` child only, currently `Boat`): thrust from the
+  apparent wind (`workspace.GlobalWind` direction at `WindSpeed`, minus the hull's
+  own velocity). Nothing in irons, best on a beam reach, a little less dead downwind.
+  Small leeway, damped by the keel. The sail mesh does not trim visually yet.
+- **Rudder**: `MaxTurnRate` scaled by forward speed over `TurnReferenceSpeed`, so a
+  stopped hull does not spin. Reversing turns the bow the other way.
+- **Unmanned**: the server applies drag only, so an abandoned hull coasts to a stop.
+- **Draft**: the `Draft` attribute lowers the buoyancy goal (0 on `Boat`, 5.5 on
+  `WoodenShip`).
+
+Tuning lives in `ShipDrive.Defaults`. The sail value was set by a sweep, with a
+14 studs/s breeze: beam reach about 17, downwind about 6, close-hauled about 5.5
+studs/s. `WoodenShip` has no `Sail` child and so is engine-only.
+
+## Ship guard: anti-climb and anti-sink (`ShipGuard`)
+
+`src/ReplicatedStorage/ShipHandling/ShipGuard.luau` is shared by `Ship.Handler` and
+`Ship.Client`. It acts on vertical motion only, so a ship still pushes unanchored
+objects aside, and fixed objects still stop it.
+
+- **Anti-climb.** While the hull touches a part outside the ship, a rising hull is held
+  at zero rise. Ships do not ride up onto islands, floaters or anything else.
+- **Anti-sink, contact.** When the hull is more than `ContactBand` (1 stud) below its
+  buoyancy goal and touching something, it may not move down. A floater or overhang
+  that presses on the hull cannot drive it under.
+- **Anti-sink, floor.** Out of contact and more than `SinkMargin` (2.5 studs) below the
+  goal, a soft floor lifts the hull back toward it, proportional and capped at `MaxRise`
+  (20 studs/s).
+- **Servo reserve.** Below the band, the buoyancy servo's force limit rises with the gap
+  (`ReserveGain`, capped at `ReserveMax` times the hull's weight). This is what holds
+  against a sustained load. A velocity clamp alone cannot: a steady force still moves the
+  hull every physics step, so zeroing velocity each frame does not stop a sink.
+
+The guard's reference is not the servo goal. The goal (`targetY - Draft`) includes a drag
+term on the hull's own centre of mass, so it falls as the hull sinks and the gap never
+grows. The reference is the sea surface under the hull (mean of the four corner heights,
+`seaSurfaceAt` in `Ship.Handler`) plus `SinkRestOffset`. That attribute defaults to
+`baseHeight - Draft`. WoodenShip sets `SinkRestOffset = -2` (measured: its hull rests about
+2 studs below the surface). Set it per ship, not in the guard.
+
+Measurements (server probes, unmanned, steady downward push as a multiple of the hull's
+weight). Settled height is the hull's Main Y minus the sea surface.
+- Boat, 6x: settled -2.15, lowest -3.16, recovered -2.42. Earlier, with the goal as the
+  reference: lowest -5.06. With the floor switched off (control), the Boat sank about 550
+  studs and was destroyed by the world's fall-destroy.
+- WoodenShip, 2x: settled -2.89, lowest -3.26.
+- WoodenShip, 6x: settled -0.93, lowest -6.27 (about 5 studs), still bobbing about +/-4.
+  Not solved. Responsiveness 4 during the push did not help (lowest -7.37).
+- WoodenShip, 6x with a block touching the `Union` (`probes/sink_contact2.lua`): 3 of 24
+  frames in contact, lowest -5.91 from settled -1.95.
+
+Open: a steady 6x load on WoodenShip still sinks about 5 studs. The next step is an
+explicit upward `VectorForce` spring with damping, which would not depend on the velocity
+clamp and the servo fighting each physics step. Not built yet.
+
+### Client (driver's machine)
+
+`Ship.Client` uses the same surface reference as the Handler (`seaSurfaceAt` plus
+`SinkRestOffset`, default `baseHeight - Draft`). It was updated after the Handler, so the
+goal-based reference is gone from both. WoodenShip.Client is still Disabled and was not
+updated, as agreed.

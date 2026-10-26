@@ -72,6 +72,7 @@ local Workspace = game:GetService("Workspace")
 
 local Config = require(script.Parent.FloatingObjectConfig)
 local WaveFloat = require(script.Parent.WaveFloat)
+local Density = require(ReplicatedStorage.IslandGeneration.Density)
 local OctreeModule = require(ReplicatedStorage:WaitForChild("Octree"))
 local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
 
@@ -423,11 +424,17 @@ local function hasFreshCamera(now: number): boolean
 	return false
 end
 
-local function isSeenByAnyCamera(pos: Vector3, now: number): boolean
+-- extraAngleDeg widens the cone (hysteresis): a rendered object keeps its place
+-- while it sits at the edge of view instead of flickering out.
+local function isSeenByAnyCamera(pos: Vector3, now: number, extraAngleDeg: number?): boolean
 	local streamingConfig = getStreamingConfig()
 	local timeout = streamingConfig.CameraDataTimeout or 3
 	local maxDistance = streamingConfig.CameraMaxDistance or 800
 	local viewCos = getViewConeCos()
+	if extraAngleDeg and viewCos > -1 then
+		local angleDeg = math.min(89, (streamingConfig.CameraViewConeAngleDeg or 55) + extraAngleDeg)
+		viewCos = math.cos(math.rad(angleDeg))
+	end
 
 	for _, state in cameraStates do
 		if now - state.at <= timeout then
@@ -757,8 +764,27 @@ local function applyBuoyancyTarget(record, now: number, near: boolean, buoyancyC
 	-- error at the mover attachment, and the angle between the hull's up axis
 	-- and the goal's.
 	local errorY = 0
+	local signedError = 0
 	if targetY ~= nil then
-		errorY = math.abs(targetY - sim.mover.WorldPosition.Y)
+		signedError = targetY - sim.mover.WorldPosition.Y
+		errorY = math.abs(signedError)
+	end
+
+	-- Integral action (Small and Medium only, IntegralClasses). The servo's goal
+	-- leads the object by about a stud at steady state, so the object rides low
+	-- (floating/NOTES.md). While the object is riding (near, and within
+	-- SettleDistance of its nominal height), the goal is biased by the integral of
+	-- its height error, which drives that error toward zero. The bias is clamped,
+	-- and it is frozen when the object is not riding.
+	local goalY = targetY
+	if targetY ~= nil and sim.integralGain > 0 then
+		local dt = math.min(now - (sim.integralAt or now), 0.25)
+		sim.integralAt = now
+		if near and errorY <= (buoyancyConfig.SettleDistance or 2) then
+			local maxBias = buoyancyConfig.IntegralMaxBias or 1.5
+			sim.integralBias = math.clamp(sim.integralBias + sim.integralGain * signedError * dt, -maxBias, maxBias)
+		end
+		goalY = targetY + sim.integralBias
 	end
 	local settleCos = math.cos(math.rad(buoyancyConfig.SettleAngleDegrees or 15))
 	local soft = not near
@@ -819,7 +845,7 @@ local function applyBuoyancyTarget(record, now: number, near: boolean, buoyancyC
 	if (buoyancyConfig.DriftReturnForce or 0) > 0 then
 		goalX, goalZ = sim.homeX, sim.homeZ
 	end
-	alignPosition.Position = Vector3.new(goalX, targetY, goalZ)
+	alignPosition.Position = Vector3.new(goalX, goalY, goalZ)
 	alignPosition.Enabled = true
 end
 
@@ -1011,9 +1037,13 @@ local function disconnectRecordSignals(record)
 	end
 end
 
+-- Diagnostics: how many times each cache reason fired this session.
+local cacheCounts = {}
+
 -- Destroys the clone and returns the record to the lightweight cache, or
 -- permanently despawns it (`permanent`, e.g. lifetime expiry / physics loss).
 function cacheObjectRecord(record, reason: string, permanent: boolean?)
+	cacheCounts[reason] = (cacheCounts[reason] or 0) + 1
 	disconnectRecordSignals(record)
 	forgetOwnership(record)
 	record.nearestPlayer = nil
@@ -1255,6 +1285,9 @@ local function buildSim(record)
 	end
 
 	local moverWorld = mover.WorldPosition
+	-- Integral action on the buoyancy goal, Small and Medium only (see applyBuoyancyTarget).
+	local buoyancyCfg = getBuoyancyConfig()
+	local integralClasses = buoyancyCfg.IntegralClasses or {}
 	record.sim = {
 		mover = mover,
 		waterline = waterline,
@@ -1278,6 +1311,9 @@ local function buildSim(record)
 		verticalOnly = verticalOnly,
 		homeX = moverWorld.X,
 		homeZ = moverWorld.Z,
+		integralGain = integralClasses[record.className] and (buoyancyCfg.IntegralGain or 0) or 0,
+		integralBias = 0,
+		integralAt = nil,
 		yaw = record.yaw or 0,
 		nextUpdateAt = 0,
 		nextZoneAt = 0,
@@ -1419,6 +1455,19 @@ end
 -- Best record to cache when the render cap is full. Prefers objects with no
 -- player nearby (frozen ones first - removing them interrupts no
 -- simulation); falls back to the OLDEST rendered object.
+-- An object is "in sight" when a player's camera can see it, or a player is
+-- inside its simulation band. In-sight objects are never cached or expired to
+-- make room or on a timer.
+local function isInSight(record, now: number): boolean
+	local pos = getRecordWorldPos(record)
+	if isSeenByAnyCamera(pos, now, 15) then
+		return true
+	end
+	local _, nearestSq = nearestPlayerInfo(pos)
+	local simDistance = record.simDistance or 200
+	return nearestSq <= simDistance * simDistance
+end
+
 local function getCullCandidate()
 	local despawnConfig = getDespawnConfig()
 	local protectDistance = despawnConfig.CullNearPlayerDistance or 260
@@ -1430,6 +1479,9 @@ local function getCullCandidate()
 	local oldestAge = -math.huge
 
 	for record in activeRecords do
+		if isInSight(record, now) then
+			continue
+		end
 		local pos = getRecordWorldPos(record)
 		local nearestSq = distanceSqToNearestPlayer(pos)
 		local age = now - (record.activatedAt or now)
@@ -1541,7 +1593,15 @@ local function generateCellRecords(cx: number, cz: number)
 	local rng = Random.new(getCellSeed(cx, cz))
 	local emptyMarker = nil
 
-	if rng:NextNumber() > (pl.ObjectChance or 0.65) then
+	-- ROADMAP 7.1: objects follow the shared density field (archipelagos dense,
+	-- open water sparse). ObjectChance is a global multiplier.
+	local objectChance = pl.ObjectChance or 1
+	local dc = pl.Density
+	if dc and dc.Enabled ~= false then
+		local t = Density.value(cx * cell, cz * cell, getWorldSeed(), dc.Scale or 1400)
+		objectChance *= Density.chance(t, dc.MinChance or 0.15, dc.MaxChance or 0.75)
+	end
+	if rng:NextNumber() > objectChance then
 		emptyMarker = true
 	end
 
@@ -1724,6 +1784,14 @@ local function recordHasInterest(record, now: number): (boolean, boolean)
 	record.nearestSq = nearestSq
 	updateSimBand(record, nearestSq)
 
+	-- Keep a clear ring around each player (Streaming.MinPlayerDistance) for
+	-- objects that are not yet rendered. Rendered objects stay in the world.
+	local minDistance = streamingConfig.MinPlayerDistance or 0
+	if not record.rendered and nearestSq < minDistance * minDistance then
+		record.unseenSince = nil
+		return false, false
+	end
+
 	if nearestSq > cacheDistance * cacheDistance then
 		return false, false
 	end
@@ -1737,7 +1805,7 @@ local function recordHasInterest(record, now: number): (boolean, boolean)
 		record.unseenSince = nil
 		return true, true -- distance-only fallback: keep rendered, frozen
 	end
-	if isSeenByAnyCamera(pos, now) then
+	if isSeenByAnyCamera(pos, now, record.rendered and 15 or nil) then
 		record.unseenSince = nil
 		return true, true
 	end
@@ -1824,7 +1892,12 @@ local function updateLifetimeDespawns()
 	local expired = {}
 	for record in activeRecords do
 		if record.expiresAt and now >= record.expiresAt then
-			table.insert(expired, record)
+			if isInSight(record, now) then
+				-- Never expire an object a player can see; check again shortly.
+				record.expiresAt = now + 10
+			else
+				table.insert(expired, record)
+			end
 		end
 	end
 	for _, record in expired do
@@ -2153,6 +2226,20 @@ function FloatingObjectGenerator.RemovePlayer(player: Player)
 	end
 end
 
+-- ROADMAP 7.1 (diagnostics): cached, live object records within `radius` of a
+-- position. Read-only.
+function FloatingObjectGenerator.CountNearby(position: Vector3, radius: number): number
+	local center = Vector3.new(position.X, PLANE_Y, position.Z)
+	local count = 0
+	for _, node in recordOctree:SearchRadius(center, radius) do
+		local record = node.Object and node.Object.record
+		if record == nil or not record.dead then
+			count += 1
+		end
+	end
+	return count
+end
+
 function FloatingObjectGenerator.GetStats()
 	local cachedCells = 0
 	local cachedRecords = 0
@@ -2189,6 +2276,7 @@ function FloatingObjectGenerator.GetStats()
 		FrozenObjects = frozen,
 		MaxRenderedObjects = getStreamingConfig().MaxRenderedObjects or 500,
 		Streaming = streamingLoopRunning,
+		CacheReasons = cacheCounts,
 		FreshCameras = freshCameras,
 		NearBandStuds = getBuoyancyConfig().NearDistance or 150,
 		ClientOwnedObjects = clientOwnedCount(),

@@ -9,7 +9,7 @@ return {
 
 	-- How far (in degrees) from the player's facing direction the client is
 	-- allowed to look for a target in front of them.
-	MAX_LOOK_ANGLE_DEGREES = 110,
+	MAX_LOOK_ANGLE_DEGREES = 360,
 
 	-- How long (seconds) an unnotched offer may live before it expires.
 	OFFER_TIMEOUT = 3,
@@ -27,8 +27,12 @@ return {
 	-- players are continuously drawn toward each other while still retaining
 	-- independent movement. A tiny rest distance avoids unstable zero-length
 	-- direction vectors when they overlap exactly.
-	REST_DISTANCE = 0.1,
-	SPRING_STRENGTH = 1100,
-	PULL_DAMPING = 160,
-	MAX_PULL_FORCE = 4000,
+	REST_DISTANCE = 0.01,
+	SPRING_STRENGTH = 4100,
+	PULL_DAMPING = 3600,
+	MAX_PULL_FORCE = 400000,
+
+	-- Minimum seconds between one player starting new offers (L presses). Stops
+	-- offer spam. Accepting an existing offer is never blocked.
+	OFFER_COOLDOWN = 1,
 }

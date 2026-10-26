@@ -51,7 +51,7 @@ DataModel
 │   │   ├── Types.luau                       → Types (ModuleScript) — type defs
 │   │   ├── Helper.luau                      → Helper (ModuleScript) — frustum / color / depth / UV / island&zone math
 │   │   ├── HeightLookup.luau                → HeightLookup (ModuleScript) — water height query
-│   │   ├── Appearance.luau                  → Appearance (ModuleScript) — PLACEHOLDER for the ocean SurfaceAppearance
+│   │   ├── Appearance.model.json            → Appearance (SurfaceAppearance, grey, no PBR maps yet)
 │   │   ├── Settings/
 │   │   │   ├── init.luau                    → Settings (ModuleScript) — waves + all tuning constants
 │   │   │   └── Seed.model.json              → Seed (IntValue, 0)
@@ -62,7 +62,7 @@ DataModel
 │   │       │   └── ExistingMesh.model.json  → ExistingMesh (MeshPart)
 │   │       └── ZoneManager/
 │   │           ├── init.luau                → ZoneManager — island/zone spatial index + multipliers
-│   │           ├── EditZone.model.json      → EditZone (BindableEvent) — ⚠ should be a RemoteEvent
+│   │           ├── EditZone.model.json      → EditZone (RemoteEvent)
 │   │           └── ZoneUpdated.model.json   → ZoneUpdated (BindableEvent)
 │   ├── HandHolding [Folder]
 │   │   ├── HandHoldingConfig.luau           → config (numbers, server/client shared)
@@ -78,7 +78,10 @@ DataModel
 │
 ├── StarterPlayer
 │   └── StarterPlayerScripts
-│       └── HandHoldingClient.client.luau    → R15 hand-holding input/target picker
+│       ├── HandHoldingClient.client.luau    → R15 hand-holding input/target picker
+│       └── OceanParallel/                    → ocean renderer (ROADMAP 3.1–3.3)
+│           ├── init.client.luau              → mesh setup, chunk dispatch, ClientInit
+│           └── ParallelWorker.client.luau    → parallel Actor: per-chunk vertex update
 │
 ├── Workspace
 │   ├── singletons/Folder
@@ -124,7 +127,7 @@ the host.
 | `workspace.GlobalWind` | `Settings.BrownianMotionWaves` | Vector3Value/part with `.Unit` | If `BrownianMotionWaves` is enabled and this is missing, `.Unit` errors. (Currently the `BrownianMotionWaves` line is commented out; a hardcoded wave table is used instead.) |
 | `ServerStorage.Islands` | `IslandGenerator` | Folder of biome folders containing island `Model`s | Generator warns and no-ops; no islands placed. |
 | `Workspace.singletons.Ship` | Ship scripts | Model with `Main`, `VehicleSeat`, `Client`, and `Main.TopLeft/TopRight/BottomLeft/BottomRight` attachments | Ship fails to drive. |
-| `ReplicatedStorage.Gerstner.Appearance` | `Setup` | **Real** `SurfaceAppearance` (PBR ocean maps). **Currently a placeholder ModuleScript.** | Ocean planes use `Granite` material with no ocean PBR; `Setup` clones it onto every plane regardless. |
+| `ReplicatedStorage.Gerstner.Appearance` | `Setup` | `SurfaceAppearance` model (grey, no PBR maps). Synced to the live place. | Ocean planes have no PBR maps; `Setup` clones it onto every plane. |
 
 > ⚠ **Two known gaps from `README.md`, confirmed by this audit:**
 > `Appearance` is a placeholder (must be replaced with a `SurfaceAppearance`),
@@ -166,8 +169,8 @@ ultimately calls back into this module's math.
   `BrownianMotionWaves()` generator available (commented out).
 - Defines grid settings (chunk size, padding, plane offset, UV scale), render
   distances, LOD subdivisions, island multipliers, wave colors, UV scroll, depth
-  ray length/offset, whitecap height, shore transparency, and the
-  `FRUSTUM_CULLING_FIX` flag.
+  ray length/offset, whitecap height, and shore transparency. (The former
+  `FRUSTUM_CULLING_FIX` flag was retired in ROADMAP 3.4.)
 - **Seed handling:** if `Seed.Value == 0`, it reseeds to a random value and
   writes it back. This makes the world deterministic across restarts once a seed
   is set. `IslandGenerator` reuses this same `Seed` IntValue so ocean and islands
@@ -213,9 +216,10 @@ this XZ?"** with three accuracy/speed tiers:
 and anything that floats. Boxy: the ship's buoyancy calls it 4×/frame with
 `PRECISE`.
 
-⚠ On the client it requires `ClientInit(...)` to have been called (which sets
-`_PLANE`/`EditableMesh`). In this repo **nothing calls `ClientInit`**, so all
-client-side `PRECISE` lookups return `-1` (see audit §7).
+On the client it requires `ClientInit(...)` to have been called (which sets
+`_PLANE`/`EditableMesh`). The ocean renderer calls it once the mesh exists
+(`StarterPlayerScripts/OceanParallel/init.client.luau`, ROADMAP 3.2). The ship no
+longer uses `PRECISE` at all (ROADMAP 2.4), so this matters only for other callers.
 
 ### 4.5 Setup — `Gerstner/Serial/Setup/init.luau`
 
@@ -235,8 +239,9 @@ client-side `PRECISE` lookups return `-1` (see audit §7).
 **Contribution to the whole:** translates math into an actual visual/collidable
 mesh, and builds the LOD structure other systems rely on.
 
-⚠ These functions have **no in-repo callers** — the ocean renderer/orchestrator
-that drives them is absent (see audit §7).
+These functions are driven by the ocean renderer, `StarterPlayerScripts/OceanParallel/`
+(client LocalScript, with `ParallelWorker.client.luau` as its child Actor script).
+It was live-only before Phase 3 and is now in the repo.
 
 ### 4.6 Octree — `ReplicatedStorage/Octree.luau`
 
@@ -299,8 +304,13 @@ boat, reads the water height at each (via `HeightLookup.Lookup`), and returns:
 - Clones the `Client` LocalScript into the occupant's `PlayerGui` (so the driver
   only sees it).
 - Registers collision groups `Ship` / `ShipIsland`, marks `workspace.Map`
-  descendants as `ShipIsland`, and disables `Ship`↔`ShipIsland` collision so the
-  boat cannot climb islands.
+  descendants as `ShipIsland`, and keeps `Ship`↔`ShipIsland` collision on so
+  fixed islands block the hull. Ships used to pass through islands because this
+  pair was non-collidable. Set it back only with the anti-climb guard in place.
+- Anti-climb guard (Handler and Client): while the hull touches a part outside the
+  ship and is moving up, the upward velocity is cancelled. The Client runs it on
+  the driver's machine, because the driver owns the hull while aboard. Unanchored
+  objects are pushed by the bow, as normal physics. Fixed objects block.
 
 **Contribution to the whole:** turns water height into a functioning, driveable
 floating boat that respects islands.
@@ -416,7 +426,7 @@ The central question everything orbits is **"where is the water surface?"**
 
 - **No RemoteEvents needed** for the ocean (it's modular math/modules). The only
   RemoteEvent in the repo is `HandHoldingEvent`.
-- `EditZone` **should** be a RemoteEvent (currently mislabeled).
+- `EditZone` is a RemoteEvent (fixed, AUDIT B-1).
 - Islands are server-owned and replicate as normal instances; clients never
   generate them.
 - The ship client is spawned server-side into the driver's `PlayerGui` and given
@@ -447,12 +457,10 @@ abstractions** and **one question**:
    `GlobalWind`, `Islands`) + tooling.
 
 **The key insight for onboarding:** the repo is **a modular component library for
-an ocean**, not a single self-driving script. The **ocean renderer/orchestrator
-that would call `Setup`, `HeightLookup.ClientInit`, `GetFrustumPlanes`,
-`IsInView`, `GetVertexColor`, `ComputeTransformAndNormal`, and `SET_SETTINGS` is
-not present** in this snapshot. Consequently many of those functions are
-library-only today. Any future work that wants the ocean to actually *render* and
-*bob the ship correctly* must add that orchestrator (or wire `ClientInit`).
+an ocean**, not a single self-driving script. The **ocean renderer/orchestrator**
+is `StarterPlayerScripts/OceanParallel/`. It calls `Setup`, `HeightLookup.ClientInit`,
+`GetFrustumPlanes`, `IsInView`, `GetVertexColor`, `ComputeTransformAndNormal`, and
+`SET_SETTINGS`. It was live-only until Phase 3 sync.
 
 ### 6.1 One-sentence per system (handy cheat-sheet)
 
@@ -487,8 +495,8 @@ library-only today. Any future work that wants the ocean to actually *render* an
    are "already running."
 6. **Rojo naming rules** — never mix `Foo.luau` + `Foo/`; Folder-with-children
    uses `init.luau`.
-7. **`EditZone` is mislabeled** (BindableEvent used as RemoteEvent) — one-word fix
-   in `EditZone.model.json` (`"BindableEvent"` → `"RemoteEvent"`), see audit.
+7. **`EditZone` is a RemoteEvent** (`EditZone.model.json`). It was mislabeled as a
+   BindableEvent until AUDIT B-1 was fixed; keep it a RemoteEvent.
 8. **`Appearance` placeholder** — `Setup` clones it onto every plane but it's
    currently a ModuleScript `{}` with a `warn`. Replace with a real
    `SurfaceAppearance`.

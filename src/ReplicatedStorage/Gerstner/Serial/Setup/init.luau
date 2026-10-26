@@ -20,7 +20,8 @@ local Setup = {
 		Width = 0,
 		Length = 0,
 		UV_SCALE = 0,
-		PLANE_OFFSET = Vector3.zero,
+		-- // Single source for the waterline: Settings.GRID_SETTINGS.PLANE_OFFSET (ROADMAP 3.5)
+		PLANE_OFFSET = _settings.GRID_SETTINGS.PLANE_OFFSET,
 	},
 	VertexInfo = VertexInfo,
 	VertexPositionToId = {},
@@ -150,7 +151,7 @@ local function InsertToVertexInfo(EM: EditableMesh, Id: number)
 
 	local QUALITY_LEVEL = 1
 	local Distance = (Position - EM:GetCenter()).Magnitude
-	if Distance > _settings.LowRenderDistance then
+	if Distance > _settings.MeshDetailDistance then
 		QUALITY_LEVEL = 2
 	end
 
@@ -228,7 +229,7 @@ function Setup.SetupEditableMesh(): EditableMesh
 
 			VertexInfo[VertexId] = Setup.GetBlankVertexKey(VertexId, vertexX, vertexZ)
 			local Distance = (VertexPosition - Vector3.zero).Magnitude
-			if Distance > _settings.LowRenderDistance then
+			if Distance > _settings.MeshDetailDistance then
 				VertexInfo[VertexId].QUALITY_LEVEL = 2
 			end
 
@@ -475,7 +476,10 @@ function Setup.SetupSecondaryPlanes(EM: EditableMesh): { { MeshPart | Vector3 } 
 	end
 
 	local SecondaryPlaneInfo = {}
-	for i = 1, 8 do
+	-- // The tiles are added in order: 1-4 cardinal sides, 5-8 diagonal corners.
+	-- // 8 = full ring (default); 4 leaves the corners open; 0 = main plane only.
+	local TileCount = math.clamp(math.floor(_settings.GRID_SETTINGS.SECONDARY_PLANES or 8), 0, 8)
+	for i = 1, TileCount do
 		local NewSize = EditableMesh:GetSize()
 
 		local Plane = AssetService:CreateMeshPartAsync(Content.fromObject(EditableMesh))

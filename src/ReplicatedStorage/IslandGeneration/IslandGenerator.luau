@@ -30,6 +30,11 @@
 		    this broadphase check so a moving player does not permanently block a
 		    deterministic cell.
 
+	Modules (ROADMAP 4.3): premade island discovery lives in Discovery.luau,
+	footprint octree + overlap/obstacle checks in Placement.luau, player proximity
+	in Proximity.luau, and sound/tween helpers in Presentation.luau. Record
+	lifecycle and streaming stay here because they own the shared record state.
+
 	References (official docs):
 		ServerStorage         https://create.roblox.com/docs/reference/engine/classes/ServerStorage
 		Instance              https://create.roblox.com/docs/reference/engine/classes/Instance
@@ -43,30 +48,25 @@
 ]]
 
 local CollectionService = game:GetService("CollectionService")
-local Debris = game:GetService("Debris")
-local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerStorage = game:GetService("ServerStorage")
-local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(script.Parent.IslandConfig)
-local OctreeModule = require(ReplicatedStorage.Octree)
+local Density = require(script.Parent.Density)
+local Discovery = require(script.Parent.Discovery)
+local Placement = require(script.Parent.Placement)
+local Presentation = require(script.Parent.Presentation)
+local Proximity = require(script.Parent.Proximity)
 
 local PLANE_Y = Config.PlaneOffset
 local TAG = "Island"
 local RISING_ISLANDS_FOLDER_NAME = "_RisingIslands"
 local NO_ISLAND = false
-local ASSET_ID_PREFIX = "rbxassetid://"
 local HASH_MOD = 2147483647
 local HASH_X = 73856093
 local HASH_Z = 19349663
 
 local IslandGenerator = {}
-
--- Octree of every island footprint we must avoid: cached generated records plus
--- any user-authored islands already sitting in workspace.Map.
-local islandOctree = OctreeModule.new()
 
 -- Cached generation state. cellCache[key] is either an island record table or
 -- NO_ISLAND. nil means the cell has not been evaluated yet.
@@ -88,15 +88,8 @@ local mapSeeded = false
 local streamingLoopRunning = false
 local generationToken = 0
 local cachedWorldSeed = nil
+local cachedMaxTemplateRadius = nil
 
--- OverlapParams used by the obstacle check. FilterDescendantsInstances is kept
--- fresh before each query so Map/Ocean/rising islands/player characters are not
--- treated as blockers.
-local obstacleParams = OverlapParams.new()
-obstacleParams.FilterType = Enum.RaycastFilterType.Exclude
-obstacleParams.RespectCanCollide = false -- also treat CanQuery-only decor as blockers
-obstacleParams.MaxParts = 64 -- bound the query; any hit (> 0) already blocks
-obstacleParams.FilterDescendantsInstances = {}
 
 -- Config helpers ---------------------------------------------------------------
 
@@ -208,36 +201,6 @@ local function getCellSeed(cx: number, cz: number): number
 	return math.floor(seed)
 end
 
-local function refreshObstacleFilters(map: Folder?)
-	local exclude = {}
-
-	if map then
-		table.insert(exclude, map)
-	else
-		local mapInstance = Workspace:FindFirstChild("Map")
-		if mapInstance then
-			table.insert(exclude, mapInstance)
-		end
-	end
-
-	local ocean = Workspace:FindFirstChild("Ocean")
-	if ocean then
-		table.insert(exclude, ocean)
-	end
-
-	local rising = Workspace:FindFirstChild(RISING_ISLANDS_FOLDER_NAME)
-	if rising then
-		table.insert(exclude, rising)
-	end
-
-	for _, player in Players:GetPlayers() do
-		if player.Character then
-			table.insert(exclude, player.Character)
-		end
-	end
-
-	obstacleParams.FilterDescendantsInstances = exclude
-end
 
 -- workspace.Map is the folder the ocean depth raycasts include and ZoneManager
 -- scans; the generator must place risen islands there. It also tells the
@@ -250,342 +213,20 @@ local function ensureMapFolder(): Folder
 		map.Name = "Map"
 		map.Parent = Workspace
 	end
-	refreshObstacleFilters(map)
+	Placement.refreshObstacleFilters(map)
 	return map
-end
-
--- Catalog / discovery ----------------------------------------------------------
-
--- Collects every premade island Model under `folder`, recursing through nested
--- folders of any depth. We deliberately do NOT descend into Models: a model's
--- children are island components (e.g. a dock/ruin submodel), not separate
--- island templates.
-local function collectTemplates(folder: Instance, out: { Model })
-	for _, child in folder:GetChildren() do
-		if child:IsA("Model") then
-			table.insert(out, child)
-		elseif child:IsA("Folder") then
-			collectTemplates(child, out)
-		end
-		-- Ignore any other instance type (stray Parts, StringValues, ...).
-	end
-end
-
--- Builds the biome catalog from ServerStorage.Islands.
---   * Each Folder directly under the root = a biome (its Name).
---   * Models directly under the root = Config.DefaultBiome (edge case).
---   * Biomes with no island Models are skipped (edge case).
---   * Optional weights come from Config.BiomeWeights; weight <= 0 removes it.
-local function buildCatalog()
-	local root = ServerStorage:FindFirstChild(Config.PremadeIslandsRoot)
-	if not root then
-		catalog = {}
-		return catalog
-	end
-
-	local entries = {}
-
-	-- Loose Models directly under the root.
-	local rootModels = {}
-	for _, child in root:GetChildren() do
-		if child:IsA("Model") then
-			table.insert(rootModels, child)
-		end
-	end
-	if #rootModels > 0 then
-		local name = Config.DefaultBiome
-		entries[name] = {
-			name = name,
-			weight = Config.BiomeWeights[name] or Config.DEFAULT_WEIGHT,
-			templates = rootModels,
-		}
-	end
-
-	-- Biome folders.
-	for _, child in root:GetChildren() do
-		if child:IsA("Folder") then
-			local templates = {}
-			collectTemplates(child, templates)
-			if #templates > 0 then
-				local name = child.Name
-				entries[name] = {
-					name = name,
-					weight = Config.BiomeWeights[name] or Config.DEFAULT_WEIGHT,
-					templates = templates,
-				}
-			end
-		end
-	end
-
-	catalog = {}
-	for _, entry in entries do
-		if entry.weight > 0 then
-			table.insert(catalog, entry)
-		end
-	end
-	return catalog
-end
-
--- Island contract helpers ------------------------------------------------------
-
--- Radius for a premade island model: Radius IntValue first, then the XZ
--- bounding-box half (matching ZoneManager's own fallback), then DefaultRadius.
-local function modelRadius(model: Model): number
-	local radiusInst = model:FindFirstChild(Config.RadiusValueName)
-	if radiusInst and radiusInst:IsA("IntValue") and radiusInst.Value > 0 then
-		return radiusInst.Value
-	end
-	local extents = model:GetExtentsSize() * Vector3.new(1, 0, 1)
-	local bboxRadius = extents.Magnitude / 2
-	if bboxRadius > 1 then
-		return bboxRadius
-	end
-	return Config.DefaultRadius
-end
-
--- Returns the island's Center BasePart, creating a contract-compliant one at the
--- model's bounding-box center if the template has none. The returned part is the
--- model's PrimaryPart.
-local function ensureCenter(model: Model): BasePart
-	local center = model:FindFirstChild(Config.CenterPartName)
-	if center and center:IsA("BasePart") then
-		center.Anchored = true
-		center.CanCollide = false
-		model.PrimaryPart = center
-		return center
-	end
-
-	local cf = model:GetBoundingBox() -- returns (CFrame, Vector3); we want the center CFrame
-	local part = Instance.new("Part")
-	part.Name = Config.CenterPartName
-	part.Size = Config.CenterPartSize
-	part.Anchored = true
-	part.CanCollide = false
-	part.Transparency = 1
-	part.Position = cf.Position
-	part.Parent = model
-	model.PrimaryPart = part
-	return part
-end
-
--- Placement validation ---------------------------------------------------------
-
-local function hasBlockingObstacle(centerPos: Vector3, radius: number): boolean
-	local pl = Config.Placement
-	refreshObstacleFilters()
-	local parts = Workspace:GetPartBoundsInRadius(centerPos, radius + pl.ObstaclePadding, obstacleParams)
-	return #parts > 0
-end
-
--- True if `centerPos` (with footprint `radius`) is a safe, non-overlapping spot.
--- Pass `ignoredRecord` when checking a cached record against the octree that
--- already contains that same record's footprint node.
-local function isSpotClear(centerPos: Vector3, radius: number, ignoredRecord: any?, checkObstacles: boolean?): boolean
-	local pl = Config.Placement
-
-	-- (1) Island overlap via octree.
-	local searchRadius = radius + pl.SpacingPadding + pl.MaxIslandRadius
-	for _, node in islandOctree:SearchRadius(centerPos, searchRadius) do
-		local object = node.Object or {}
-		if object.record ~= ignoredRecord then
-			local otherR = object.radius or object.Radius or 0
-			if (node.Position - centerPos).Magnitude < radius + otherR + pl.SpacingPadding then
-				return false
-			end
-		end
-	end
-
-	-- (2) Obstacles via broadphase sphere query.
-	if checkObstacles ~= false and hasBlockingObstacle(centerPos, radius) then
-		return false
-	end
-
-	return true
 end
 
 -- Player proximity -------------------------------------------------------------
 
-local function getPlayerRoot(player: Player): BasePart?
-	local character = player.Character
-	if not character then
-		return nil
-	end
 
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.Health <= 0 then
-		return nil
-	end
 
-	local root = character:FindFirstChild("HumanoidRootPart")
-	if root and root:IsA("BasePart") then
-		return root
-	end
-	return nil
-end
-
-local function getPlayerRoots(): { BasePart }
-	local roots = {}
-	for _, player in Players:GetPlayers() do
-		local root = getPlayerRoot(player)
-		if root then
-			table.insert(roots, root)
-		end
-	end
-	return roots
-end
-
-local function isAnyPlayerWithin(centerPos: Vector3, radius: number): boolean
-	local radiusSq = radius * radius
-	for _, player in Players:GetPlayers() do
-		local root = getPlayerRoot(player)
-		if root then
-			local dx = root.Position.X - centerPos.X
-			local dz = root.Position.Z - centerPos.Z
-			if dx * dx + dz * dz <= radiusSq then
-				return true
-			end
-		end
-	end
-	return false
-end
 
 local function isAnyPlayerCloseEnoughToRise(record): boolean
 	local riseConfig = getRiseConfig()
-	return isAnyPlayerWithin(record.centerPos, record.radius + (riseConfig.TriggerDistance or 0))
+	return Proximity.isAnyPlayerWithin(record.centerPos, record.radius + (riseConfig.TriggerDistance or 0))
 end
 
-local function distanceSqToNearestPlayer(centerPos: Vector3): number
-	local best = math.huge
-	for _, player in Players:GetPlayers() do
-		local root = getPlayerRoot(player)
-		if root then
-			local dx = root.Position.X - centerPos.X
-			local dz = root.Position.Z - centerPos.Z
-			local distSq = dx * dx + dz * dz
-			if distSq < best then
-				best = distSq
-			end
-		end
-	end
-	return best
-end
-
--- Sound / tween helpers --------------------------------------------------------
-
-local function normalizeSoundId(soundId): string
-	local soundIdType = type(soundId)
-	if soundIdType == "number" then
-		return ASSET_ID_PREFIX .. tostring(soundId)
-	elseif soundIdType == "string" then
-		if soundId == "" then
-			return ""
-		end
-		if tonumber(soundId) then
-			return ASSET_ID_PREFIX .. soundId
-		end
-		return soundId
-	end
-	return ""
-end
-
-local function playConfiguredSound(model: Model, soundConfig, soundName: string)
-	local soundId = normalizeSoundId(soundConfig.SoundId)
-	if soundId == "" then
-		return
-	end
-
-	local parent: Instance = model.PrimaryPart or model:FindFirstChild(Config.CenterPartName) or model
-	local sound = Instance.new("Sound")
-	sound.Name = soundName
-	sound.SoundId = soundId
-	sound.Volume = soundConfig.SoundVolume or 0.8
-	sound.RollOffMaxDistance = soundConfig.SoundRollOffMaxDistance or 500
-	sound.Parent = parent
-	sound:Play()
-
-	local cleanupDelay = math.max(soundConfig.SoundCleanupDelay or 10, (soundConfig.TweenTime or 4) + 10)
-	Debris:AddItem(sound, cleanupDelay)
-end
-
-local function makeTweenInfo(tweenConfig, defaultStyle, defaultDirection): TweenInfo
-	return TweenInfo.new(
-		math.max(0.05, tweenConfig.TweenTime or 4),
-		tweenConfig.EasingStyle or defaultStyle,
-		tweenConfig.EasingDirection or defaultDirection
-	)
-end
-
-local function cleanupPivotTween(tweenStore, record)
-	local active = tweenStore[record]
-	if not active then
-		return
-	end
-
-	tweenStore[record] = nil
-	if active.completedConnection then
-		active.completedConnection:Disconnect()
-	end
-	if active.changedConnection then
-		active.changedConnection:Disconnect()
-	end
-	if active.tween then
-		active.tween:Cancel()
-	end
-	if active.pivotValue then
-		active.pivotValue:Destroy()
-	end
-end
-
-local function tweenModelPivot(record, tweenStore, tweenInfo: TweenInfo, goalPivot: CFrame, onCompleted)
-	local model = record.model
-	if not model or not model.Parent then
-		return nil
-	end
-
-	cleanupPivotTween(tweenStore, record)
-
-	local pivotValue = Instance.new("CFrameValue")
-	pivotValue.Value = model:GetPivot()
-
-	local changedConnection = pivotValue:GetPropertyChangedSignal("Value"):Connect(function()
-		if model.Parent then
-			model:PivotTo(pivotValue.Value)
-		end
-	end)
-
-	local tween = TweenService:Create(pivotValue, tweenInfo, {
-		Value = goalPivot,
-	})
-	local active = {
-		tween = tween,
-		pivotValue = pivotValue,
-		changedConnection = changedConnection,
-		completedConnection = nil,
-	}
-	tweenStore[record] = active
-
-	local completedConnection
-	completedConnection = tween.Completed:Connect(function(playbackState)
-		if completedConnection then
-			completedConnection:Disconnect()
-		end
-		if changedConnection then
-			changedConnection:Disconnect()
-		end
-		if pivotValue then
-			pivotValue:Destroy()
-		end
-		tweenStore[record] = nil
-
-		if playbackState == Enum.PlaybackState.Completed then
-			onCompleted()
-		end
-	end)
-	active.completedConnection = completedConnection
-
-	tween:Play()
-	return tween
-end
 
 -- Record/model lifecycle -------------------------------------------------------
 
@@ -646,9 +287,21 @@ local function getRecordLifetime(record, rng: Random?): number
 	return Random.new(getCellSeed(record.cx or 0, record.cz or 0) + 17):NextNumber(minLifetime, maxLifetime)
 end
 
+-- Drops the given records from allGeneratedRecords in one pass (ROADMAP 4.1).
+local function removeGeneratedRecords(removed: { [any]: boolean })
+	local kept = {}
+	for _, record in allGeneratedRecords do
+		if not removed[record] then
+			table.insert(kept, record)
+		end
+	end
+	table.clear(allGeneratedRecords)
+	table.move(kept, 1, #kept, 1, allGeneratedRecords)
+end
+
 local function destroyRecordModel(record, permanent: boolean, cooldownSeconds: number?)
-	cleanupPivotTween(activeRiseTweens, record)
-	cleanupPivotTween(activeSinkTweens, record)
+	Presentation.cleanupPivotTween(activeRiseTweens, record)
+	Presentation.cleanupPivotTween(activeSinkTweens, record)
 
 	local model = record.model
 	if model then
@@ -671,9 +324,16 @@ local function destroyRecordModel(record, permanent: boolean, cooldownSeconds: n
 		record.permanentlyDespawned = true
 		record.despawnedAt = getNow()
 		if record.node then
-			islandOctree:RemoveNode(record.node)
+			Placement.removeFootprint(record.node)
 			record.node = nil
 		end
+		-- ROADMAP 4.1: a permanently despawned cell keeps only its "no island"
+		-- marker. The record is dropped, so expired islands do not pile up for the
+		-- whole session. The cell still never regenerates.
+		if record.key and cellCache[record.key] == record then
+			cellCache[record.key] = NO_ISLAND
+		end
+		removeGeneratedRecords({ [record] = true })
 	else
 		record.state = "Cached"
 		record.cullCooldownUntil = getNow() + (cooldownSeconds or 0)
@@ -689,7 +349,7 @@ local function cloneRecordModel(record): Model?
 	end
 
 	local clone = record.template:Clone()
-	local center = ensureCenter(clone)
+	local center = Discovery.ensureCenter(clone)
 	local radius = record.radius
 
 	-- Reposition the clone so its Center part lands exactly on record.centerPos,
@@ -745,12 +405,12 @@ local function beginIslandSink(record, reason: string, permanent: boolean)
 		return
 	end
 
-	cleanupPivotTween(activeRiseTweens, record)
+	Presentation.cleanupPivotTween(activeRiseTweens, record)
 	untagIsland(model)
 
 	local despawnConfig = getDespawnConfig()
 	local nearDistance = record.radius + (despawnConfig.NearPlayerDistance or despawnConfig.NearDistance or 300)
-	local shouldAnimate = isAnyPlayerWithin(record.centerPos, nearDistance)
+	local shouldAnimate = Proximity.isAnyPlayerWithin(record.centerPos, nearDistance)
 
 	if not shouldAnimate then
 		destroyRecordModel(record, permanent, despawnConfig.CullCooldown)
@@ -765,13 +425,13 @@ local function beginIslandSink(record, reason: string, permanent: boolean)
 	model:SetAttribute("IslandSinking", true)
 	model:SetAttribute("IslandDespawnReason", reason)
 
-	playConfiguredSound(model, despawnConfig, "IslandSinkingSound")
+	Presentation.playConfiguredSound(model, despawnConfig, "IslandSinkingSound")
 
 	local sinkDepth = math.max(0, despawnConfig.SinkDepth or getRiseConfig().HiddenDepth or 90)
 	local goalPivot = model:GetPivot() + Vector3.new(0, -sinkDepth, 0)
-	local tweenInfo = makeTweenInfo(despawnConfig, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	local tweenInfo = Presentation.makeTweenInfo(despawnConfig, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 
-	tweenModelPivot(record, activeSinkTweens, tweenInfo, goalPivot, function()
+	Presentation.tweenModelPivot(record, activeSinkTweens, tweenInfo, goalPivot, function()
 		destroyRecordModel(record, permanent, despawnConfig.CullCooldown)
 	end)
 end
@@ -786,7 +446,7 @@ local function getCullCandidate()
 
 	for record, _ in activeRecords do
 		if record.state ~= "Sinking" then
-			local nearestSq = distanceSqToNearestPlayer(record.centerPos)
+			local nearestSq = Proximity.distanceSqToNearestPlayer(record.centerPos)
 			local score = nearestSq + (getNow() - (record.activatedAt or getNow()))
 			if score > bestAnyScore then
 				bestAnyScore = score
@@ -847,7 +507,7 @@ local function beginIslandRise(record): Model?
 
 	-- Re-check broadphase obstacles right before showing the island. Cached
 	-- records are deterministic, but boats/props may have moved into the spot.
-	if not isSpotClear(record.centerPos, record.radius, record, true) then
+	if not Placement.isSpotClear(record.centerPos, record.radius, record, true) then
 		record.blockedUntil = now + (streamingConfig.ObstacleRetryDelay or 20)
 		return nil
 	end
@@ -876,10 +536,10 @@ local function beginIslandRise(record): Model?
 	model:SetAttribute("IslandSinking", false)
 
 	local riseConfig = getRiseConfig()
-	playConfiguredSound(model, riseConfig, "IslandRisingSound")
+	Presentation.playConfiguredSound(model, riseConfig, "IslandRisingSound")
 
-	local tweenInfo = makeTweenInfo(riseConfig, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	tweenModelPivot(record, activeRiseTweens, tweenInfo, record.finalPivot, function()
+	local tweenInfo = Presentation.makeTweenInfo(riseConfig, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	Presentation.tweenModelPivot(record, activeRiseTweens, tweenInfo, record.finalPivot, function()
 		if record.state ~= "Rising" or not record.model or not record.model.Parent then
 			return
 		end
@@ -898,7 +558,7 @@ local function cacheRecord(record)
 		cellCache[key] = record
 	end
 	table.insert(allGeneratedRecords, record)
-	record.node = islandOctree:CreateNode(Vector3.new(record.centerPos.X, PLANE_Y, record.centerPos.Z), {
+	record.node = Placement.createFootprint(Vector3.new(record.centerPos.X, PLANE_Y, record.centerPos.Z), {
 		radius = record.radius,
 		record = record,
 	})
@@ -920,6 +580,20 @@ local function makeRecord(template: Model, biomeName: string, centerPos: Vector3
 		lastTouched = getNow(),
 		lifetime = getRecordLifetime({ cx = cx, cz = cz }, rng),
 	}
+end
+
+-- ROADMAP 7.1: chance that cell (cx, cz) holds an island. The shared density field
+-- (Density.luau) makes archipelagos dense and open water sparse. IslandChance is
+-- still applied as a global multiplier.
+local function islandChanceAt(cx: number, cz: number, streamingConfig): number
+	local chance = streamingConfig.IslandChance or 1
+	local dc = Config.Placement.Density
+	if dc and dc.Enabled ~= false then
+		local cell = getCellSize()
+		local t = Density.value(cx * cell, cz * cell, getWorldSeed(), dc.Scale or 1400)
+		chance *= Density.chance(t, dc.MinChance or 0.25, dc.MaxChance or 0.9)
+	end
+	return chance
 end
 
 local function generateCellRecord(cx: number, cz: number)
@@ -944,7 +618,7 @@ local function generateCellRecord(cx: number, cz: number)
 	local cell = getCellSize()
 	local rng = Random.new(getCellSeed(cx, cz))
 
-	if rng:NextNumber() > (streamingConfig.IslandChance or 1) then
+	if rng:NextNumber() > islandChanceAt(cx, cz, streamingConfig) then
 		cellCache[key] = NO_ISLAND
 		return NO_ISLAND
 	end
@@ -967,15 +641,15 @@ local function generateCellRecord(cx: number, cz: number)
 	local pos = Vector3.new(x, PLANE_Y, z)
 	local entry = weightedPickEntry(catalogList, rng)
 	local template = entry.templates[rng:NextInteger(1, #entry.templates)]
-	local radius = modelRadius(template)
+	local radius = Discovery.modelRadius(template)
 
 	-- Overlap failures are permanent for this deterministic cell. Obstacle
 	-- failures are retried because boats/props may move later.
-	if not isSpotClear(pos, radius, nil, false) then
+	if not Placement.isSpotClear(pos, radius, nil, false) then
 		cellCache[key] = NO_ISLAND
 		return NO_ISLAND
 	end
-	if hasBlockingObstacle(pos, radius) then
+	if Placement.hasBlockingObstacle(pos, radius) then
 		blockedCellRetryAt[key] = now + (streamingConfig.ObstacleRetryDelay or 20)
 		return nil
 	end
@@ -1000,8 +674,8 @@ local function seedOctreeFromMap(map: Folder)
 			else
 				pos = child:GetPivot().Position
 			end
-			local radius = modelRadius(child)
-			islandOctree:CreateNode(Vector3.new(pos.X, PLANE_Y, pos.Z), {
+			local radius = Discovery.modelRadius(child)
+			Placement.createFootprint(Vector3.new(pos.X, PLANE_Y, pos.Z), {
 				radius = radius,
 				existing = true,
 			})
@@ -1013,7 +687,7 @@ end
 -- Streaming loop ---------------------------------------------------------------
 
 local function forEachPlayerCell(radius: number, maxCells: number, callback)
-	local roots = getPlayerRoots()
+	local roots = Proximity.getPlayerRoots()
 	if #roots == 0 then
 		return 0
 	end
@@ -1084,10 +758,26 @@ local function generateCellsAroundPlayers()
 	end)
 end
 
+-- ROADMAP 4.2 follow-up / activation fix: the largest premade island radius in the
+-- catalog. Activation must reach every record, so the scan is widened to this
+-- value instead of the static Placement.MaxIslandRadius (which can be smaller).
+local function getMaxTemplateRadius(): number
+	if cachedMaxTemplateRadius == nil then
+		local best = Config.Placement.MaxIslandRadius or 400
+		for _, entry in IslandGenerator.GetCatalog() do
+			for _, template in entry.templates do
+				best = math.max(best, Discovery.modelRadius(template))
+			end
+		end
+		cachedMaxTemplateRadius = best
+	end
+	return cachedMaxTemplateRadius
+end
+
 local function activateRecordsAroundPlayers()
 	local streamingConfig = getStreamingConfig()
 	local maxActivations = streamingConfig.MaxActivationsPerCycle or 8
-	local activationRadius = (getRiseConfig().TriggerDistance or 0) + Config.Placement.MaxIslandRadius + getCellSize()
+	local activationRadius = (getRiseConfig().TriggerDistance or 0) + getMaxTemplateRadius() + getCellSize()
 	local activated = 0
 
 	forEachPlayerCell(activationRadius, streamingConfig.MaxActivationCellsPerCycle or 256, function(_, _, key)
@@ -1127,11 +817,62 @@ local function updateLifetimeDespawns()
 	end
 end
 
+-- Caps the cached cell records (ROADMAP 4.1). Only cells that are far from every
+-- player and not rising/rendered are evicted, least-recently-touched first. An
+-- evicted cell is generated again from its seed if a player returns. Cells within
+-- 1.5x GenerationRadius are never evicted.
+local function pruneCachedRecords()
+	local streamingConfig = getStreamingConfig()
+	local cap = streamingConfig.MaxCachedRecords or 3000
+	local total = #allGeneratedRecords
+	if total <= cap then
+		return
+	end
+
+	local keepRadius = (streamingConfig.GenerationRadius or Config.Placement.WorldRadius) * 1.5
+	local keepDistSq = keepRadius * keepRadius
+
+	local candidates = {}
+	for _, record in allGeneratedRecords do
+		if
+			record.key
+			and record.state == "Cached"
+			and record.model == nil
+			and not record.permanentlyDespawned
+			and Proximity.distanceSqToNearestPlayer(record.centerPos) > keepDistSq
+		then
+			table.insert(candidates, record)
+		end
+	end
+	table.sort(candidates, function(a, b)
+		return (a.lastTouched or 0) < (b.lastTouched or 0)
+	end)
+
+	local count = math.min(total - cap, #candidates)
+	local removed = {}
+	for i = 1, count do
+		local record = candidates[i]
+		if cellCache[record.key] == record then
+			cellCache[record.key] = nil
+		end
+		blockedCellRetryAt[record.key] = nil
+		if record.node then
+			Placement.removeFootprint(record.node)
+			record.node = nil
+		end
+		removed[record] = true
+	end
+	if count > 0 then
+		removeGeneratedRecords(removed)
+	end
+end
+
 local function streamingStep()
 	generateCellsAroundPlayers()
 	activateRecordsAroundPlayers()
 	updateLifetimeDespawns()
 	enforceRenderedLimit(0)
+	pruneCachedRecords()
 end
 
 local function startStreamingLoop()
@@ -1205,9 +946,9 @@ local function generateStaticScatter()
 				local pos = Vector3.new(x, PLANE_Y, z)
 				local entry = weightedPickEntry(catalogList, rng)
 				local template = entry.templates[rng:NextInteger(1, #entry.templates)]
-				local radius = modelRadius(template)
+				local radius = Discovery.modelRadius(template)
 
-				if isSpotClear(pos, radius, nil, true) then
+				if Placement.isSpotClear(pos, radius, nil, true) then
 					local yaw = rng:NextNumber(0, math.pi * 2)
 					local record = cacheRecord(makeRecord(template, entry.name, pos, yaw, radius, nil, gx, gz, rng))
 					if beginIslandRise(record) then
@@ -1230,7 +971,7 @@ end
 -- Rebuilds and returns the biome catalog currently found under ServerStorage.
 function IslandGenerator.GetCatalog()
 	if catalog == nil then
-		buildCatalog()
+		catalog = Discovery.buildCatalog()
 	end
 	return catalog
 end
@@ -1273,14 +1014,19 @@ function IslandGenerator.PlaceOne(centerPos: Vector3, index: number): Model?
 	end
 	local entry = weightedPickEntry(catalogList, rng)
 	local template = entry.templates[rng:NextInteger(1, #entry.templates)]
-	local radius = modelRadius(template)
+	local radius = Discovery.modelRadius(template)
 	local pos = Vector3.new(centerPos.X, PLANE_Y, centerPos.Z)
-	if not isSpotClear(pos, radius, nil, true) then
+	if not Placement.isSpotClear(pos, radius, nil, true) then
 		return nil
 	end
 	local yaw = rng:NextNumber(0, math.pi * 2)
 	local record = cacheRecord(makeRecord(template, entry.name, pos, yaw, radius, nil, nil, nil, rng))
 	return beginIslandRise(record)
+end
+
+-- ROADMAP 7.1 (diagnostics): cached island footprints within `radius` of a position.
+function IslandGenerator.CountNearby(position: Vector3, radius: number): number
+	return Placement.countNear(position, radius)
 end
 
 function IslandGenerator.GetStats()
@@ -1309,8 +1055,8 @@ function IslandGenerator.ClearGenerated()
 		table.insert(tweenRecords, record)
 	end
 	for _, record in tweenRecords do
-		cleanupPivotTween(activeRiseTweens, record)
-		cleanupPivotTween(activeSinkTweens, record)
+		Presentation.cleanupPivotTween(activeRiseTweens, record)
+		Presentation.cleanupPivotTween(activeSinkTweens, record)
 	end
 
 	for _, record in allGeneratedRecords do
@@ -1333,9 +1079,10 @@ function IslandGenerator.ClearGenerated()
 	table.clear(activeSinkTweens)
 	renderedRecordCount = 0
 
-	islandOctree:ClearAllNodes()
+	Placement.clearFootprints()
 	mapSeeded = false
 	catalog = nil -- force re-discovery on next Generate
+	cachedMaxTemplateRadius = nil
 end
 
 return IslandGenerator

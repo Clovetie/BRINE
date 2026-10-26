@@ -85,7 +85,7 @@ FloatingObjectConfig.Classes = {
 		ClusterRadius = 26, -- max offset from the cell's jittered center
 		MinSpacing = 12, -- min center distance to other floating records
 		SimDistance = 210, -- within this player distance: full buoyancy sim
-		FloatRatio = 0.5, -- half the height above water
+		FloatRatio = 0.6, -- 60% of the height above water
 	},
 	-- Medium structures: rafts, dinghies, broken masts.
 	Medium = {
@@ -95,7 +95,7 @@ FloatingObjectConfig.Classes = {
 		ClusterRadius = 14,
 		MinSpacing = 26,
 		SimDistance = 250,
-		FloatRatio = 0.5,
+		FloatRatio = 0.6,
 	},
 	-- Large structures: wrecks, floating docks, ruined hulls.
 	Large = {
@@ -110,10 +110,10 @@ FloatingObjectConfig.Classes = {
 	-- Debris: planks, flotsam, jetsam. Spawned in clusters.
 	Debris = {
 		Weight = 4,
-		PerCellMin = 2,
-		PerCellMax = 5,
+		PerCellMin = 1,
+		PerCellMax = 3,
 		ClusterRadius = 34,
-		MinSpacing = 6,
+		MinSpacing = 12,
 		SimDistance = 170,
 		FloatRatio = 0.4,
 	},
@@ -136,13 +136,24 @@ FloatingObjectConfig.DefaultClassSettings = {
 FloatingObjectConfig.Placement = {
 	-- Jittered-grid cell size for floating object records. Smaller than the
 	-- island CellSize (360) because floating objects are small and dense.
-	CellSize = 150,
+	CellSize = 200,
 
 	-- Random offset per cell, as a fraction of CellSize.
-	GridJitter = 0.4,
+	GridJitter = 0.5,
 
-	-- Chance that an otherwise valid cell contains floating objects at all.
-	ObjectChance = 0.65,
+	-- Chance that an otherwise valid cell contains floating objects at all. 1 =
+	-- no extra thinning; the archipelago density field below does the thinning.
+	ObjectChance = 1,
+
+	-- ROADMAP 7.1: objects follow the same density field as the islands
+	-- (IslandConfig.Placement.Density), so debris gathers near archipelagos and
+	-- thins out over open water.
+	Density = {
+		Enabled = true,
+		Scale = 1400,
+		MinChance = 0.06,
+		MaxChance = 0.45,
+	},
 
 	-- Keep this radius around world origin object-free (spawn safety).
 	SpawnSafetyRadius = 140,
@@ -183,8 +194,9 @@ FloatingObjectConfig.Streaming = {
 	-- created only while a player can see them, then cached again.
 	Enabled = true,
 
-	-- How far from each player cells are generated/cached.
-	GenerationRadius = 1700,
+	-- How far from each player cells are generated/cached. Islands use 2600;
+	-- objects sit a bit closer so the sea is not overrun.
+	GenerationRadius = 2200,
 
 	-- Background-loop pacing. Work is capped/yielded per cycle.
 	GenerationInterval = 1.25,
@@ -201,7 +213,12 @@ FloatingObjectConfig.Streaming = {
 
 	-- Beyond this player distance a rendered object is cached immediately
 	-- (nobody can see it). Should be >= the largest class SimDistance.
-	CacheDistance = 650,
+	CacheDistance = 900,
+
+	-- No object renders within this distance of a player. Objects in that ring
+	-- stay cached and appear once the player moves farther away. This keeps the
+	-- area right around a boat clear of debris.
+	MinPlayerDistance = 200,
 
 	-- A rendered object that is close enough to see but is NOT inside any
 	-- player's camera view cone is cached after this many seconds of being
@@ -218,7 +235,7 @@ FloatingObjectConfig.Streaming = {
 	-- Camera interest settings. Clients report their camera position + look
 	-- direction through the CameraReport RemoteEvent; stale reports older
 	-- than CameraDataTimeout fall back to distance-only interest.
-	CameraMaxDistance = 800,
+	CameraMaxDistance = 900,
 	CameraViewConeAngleDeg = 55, -- half-angle; 55 deg ~= 110 deg cone
 	CameraDataTimeout = 3,
 	CameraMinReportInterval = 0.15, -- server-side rate limit per player
@@ -334,6 +351,14 @@ FloatingObjectConfig.Buoyancy = {
 	-- the spot it spawned at (its X/Z servo goal). 0 = props stay where a
 	-- player left them and drift forever.
 	DriftReturnForce = 0.12,
+
+	-- Integral action on the buoyancy goal, Small and Medium only. The servo rides
+	-- about a stud low on average (floating/NOTES.md); this bias removes that error.
+	-- IntegralGain is studs of goal bias per second per stud of mean height error;
+	-- the bias is clamped to IntegralMaxBias studs.
+	IntegralGain = 0.3,
+	IntegralMaxBias = 1.5,
+	IntegralClasses = { Small = true, Medium = true },
 
 	-- Network ownership. "Server" keeps physics authoritative here (determinism
 	-- + exploit resistance; the price is that local players push props with one

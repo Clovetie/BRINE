@@ -43,7 +43,7 @@ Rojo maps the filesystem onto instances, so a few placements are load-bearing:
 | `…/Serial/Setup/init.luau` | `Setup` (ModuleScript) |
 | `…/Serial/Setup/ExistingMesh.model.json` | `Setup.ExistingMesh` (MeshPart) |
 | `…/Serial/ZoneManager/init.luau` | `ZoneManager` (ModuleScript) |
-| `…/Serial/ZoneManager/EditZone.model.json` | `ZoneManager.EditZone` (BindableEvent) |
+| `…/Serial/ZoneManager/EditZone.model.json` | `ZoneManager.EditZone` (RemoteEvent) |
 | `…/Serial/ZoneManager/ZoneUpdated.model.json` | `ZoneManager.ZoneUpdated` (BindableEvent) |
 | `…/Gerstner/Settings/init.luau` | `Settings` (ModuleScript) |
 | `…/Gerstner/Settings/Seed.model.json` | `Settings.Seed` (IntValue, starts at 0) |
@@ -129,14 +129,12 @@ hierarchy above and are not created by this project:
 
 Two further things are worth deciding before this runs:
 
-1. **`Appearance` is a placeholder.** Its source wasn't supplied. `Setup`
+1. **`Appearance` has no PBR maps.** (ROADMAP 0.2: now a `SurfaceAppearance` model.) Its source wasn't supplied. `Setup`
    clones it onto each plane as a mesh material, so it is expected to be a
    `SurfaceAppearance` — but the hierarchy tags it `[MS]`, so it was
    imported as a ModuleScript.
-2. **`EditZone` is a BindableEvent per the hierarchy, but the code uses
-   RemoteEvent APIs.** `ZoneManager` calls
+2. **`EditZone` is a RemoteEvent.** `ZoneManager` calls
    `script.EditZone:FireAllClients(...)` and
-   `script.EditZone.OnClientEvent:Connect(...)`, neither of which exists on a
-   BindableEvent. `ZoneUpdated` is correctly a BindableEvent — it only uses
-   `:Fire()` and `.Event`. Changing `EditZone` to a RemoteEvent is a one-word
-   edit in `EditZone.model.json`.
+   `script.EditZone.OnClientEvent:Connect(...)`, which only exist on a
+   RemoteEvent, so `EditZone.model.json` now declares `RemoteEvent` (AUDIT B-1).
+   `ZoneUpdated` stays a BindableEvent — it only uses `:Fire()` and `.Event`.

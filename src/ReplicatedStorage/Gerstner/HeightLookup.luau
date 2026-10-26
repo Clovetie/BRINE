@@ -166,6 +166,9 @@ function HeightLookup.Lookup(Point: Vector3, LOOKUP_METHOD: string, UseNearbyVer
 		-- // An example of this occurring would be being near or inside a whirlpool.
 		-- // Doesn't seem to have a noticeable performance impact, with relatively low ms (~0.03ms) per frame.
 
+		-- // One clock read per lookup (was one per triangle corner, ~200 calls).
+		local t = workspace:GetServerTimeNow()
+
 		for SearchRegion = 0, 24 do
 			-- // This is our corner point (which is a vertex)
 
@@ -216,7 +219,6 @@ function HeightLookup.Lookup(Point: Vector3, LOOKUP_METHOD: string, UseNearbyVer
 					v2 = EM:GetPosition(Vertex2Id) + PlanePositionXZ
 					v3 = EM:GetPosition(Vertex3Id) + PlanePositionXZ
 				else
-					local t = workspace:GetServerTimeNow()
 					-- // We apply our gerstner offsets to the triangle vertices, then check if we get a resulting height
 
 					if IS_SERVER == false then
