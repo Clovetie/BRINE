@@ -67,10 +67,13 @@ Config.Viewport = {
 --   Speed     follow speed, 0 to 1
 --   Angle     rotation in degrees
 --   Offset    shift as a fraction of the screen (Vector2: X right, Y down)
+-- Values synced from the live place (2026-10-26): the repo held an older set
+-- (0.2 / 0.9 / 0) while Studio ran 0 / 0.35 / 35, which is the arrangement the
+-- user accepted as "Normal" in play. Studio is authoritative for tuning.
 Config.Gui = {
-	Distance = 0.2,
-	Speed = 0.9,
-	Angle = 0,
+	Distance = 0,
+	Speed = 0.35,
+	Angle = 35,
 	Offset = Vector2.new(0, 0),
 }
 
