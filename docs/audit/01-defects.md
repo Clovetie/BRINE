@@ -74,7 +74,7 @@ fixes.
 
 ## P2 — polish
 
-### D-06 · Duplicate `Gerstner` module inside itself
+### D-06 · Duplicate `Gerstner` module inside itself — **FIXED in Studio 2026-10-26**
 - **Object:** `ReplicatedStorage.Gerstner.init` (ModuleScript, 341 lines, 11950 bytes).
 - **Evidence:** `ReplicatedStorage.Gerstner` (ModuleScript) has 7 children — `Appearance`,
   `HeightLookup`, `Helper`, `Settings`, `Serial`, `Types`, **`init`**. Parent and child have the
@@ -83,8 +83,10 @@ fixes.
 - **Why it matters:** ~12 KB of dead replicated source, and a trap: `require(Gerstner.init)` returns
   a *second* module instance with its own state, which would silently desync waves from the real one.
 - **Fix in:** prompt **09** (delete the child; read back after).
+- **Done:** deleted `ReplicatedStorage.Gerstner.init` from Studio; verified absent; parent source
+  unchanged at 11950 bytes.
 
-### D-07 · `FloatingObjectGenerationServer` hardcodes the report interval in Studio
+### D-07 · `FloatingObjectGenerationServer` hardcodes the report interval in Studio — **FIXED in Studio**
 - **Object:** `ServerScriptService.FloatingObjectGenerationServer`.
 - **Evidence:** Studio reads `local minInterval =  0.1` (with a stray double space) and declares an
   unused `local Config = ReplicatedStorage.FloatingObjectGeneration.FloatingObjectConfig`; repo reads
@@ -93,6 +95,8 @@ fixes.
   `CameraMinReportInterval` would do nothing in Studio.
 - **Direction:** repo → Studio.
 - **Fix in:** prompt **09**.
+- **Done:** pushed the repo file to Studio; verified 73 lines and
+  `Config.Streaming.CameraMinReportInterval` present.
 
 ### D-08 · Fishing rod UI tuning differs between repo and Studio
 - **Object:** `StarterPack.StickFishingRod.FishingConfig` → `Config.Gui`.
@@ -104,7 +108,7 @@ fixes.
 - **Direction:** **Studio → repo**, pending the user's word (this one is a taste call, not a bug).
 - **Fix in:** prompt **06**.
 
-### D-09 · A debug harness runs a PRECISE wave lookup every frame
+### D-09 · A debug harness runs a PRECISE wave lookup every frame — **FIXED in Studio**
 - **Object:** `Workspace.SingleHeightLookup.LookupTesting` (`Workspace.SingleHeightLookup`, Script, 15 lines).
 - **Evidence:** connects `RunService.Stepped` and calls
   `HeightLookup.Lookup(Part.Position, 'PRECISE', …)` every frame, then writes `Part.Position`; a
@@ -113,6 +117,9 @@ fixes.
   per ROADMAP 1.2) plus a replicated position write, on the server, for a debug part. Cheap per
   frame but pointless, and it pollutes any ocean performance measurement done in Play.
 - **Fix in:** prompt **09** (delete from Studio; it is not in the repo).
+- **Done:** deleted `Workspace.SingleHeightLookup.LookupTesting`, verified absent. The parent is a
+  `Part` that also carries a `Highlight`; both were left in place because they may be a deliberate
+  marker — only the per-frame script was removed.
 
 ### D-10 · Zone scripts exist twice
 - **Object:** `Workspace.RoughSeaArea.RoughSea` + `ServerStorage.OceanEvents.SeaStuff.RoughSeaArea.RoughSea`
@@ -133,7 +140,7 @@ fixes.
 - **Fix in:** prompt **09** — decision needed: vendor them under `src/`, or document them as
   must-not-be-rebuilt.
 
-### D-12 · Three ships are built differently
+### D-12 · Three ships are built differently — **REVISED 2026-10-26**
 - **Object:** `Workspace.WoodenShip`, `Workspace.Boathouse`, `Workspace.MisoSoup`.
 - **Evidence:** only `Boathouse` has an engine `Sound` (`Motor.Engine`, `8916893206`, vol 2); only
   `Boathouse` and `WoodenShip` have a `Splash`; `MisoSoup` has neither. Attributes:
@@ -143,6 +150,13 @@ fixes.
   siblings carry a `SinkRestOffset` it lacks. The uneven audio means a fix cannot be copy-pasted
   across all three.
 - **Fix in:** prompt **07**.
+- **Revising measurement:** the Boathouse is not floating at all — it is parked on `Workspace.Part`
+  (slab top `Y = 70.24`), and its server buoyancy is correctly disabled as "airborne". See
+  `04-seam-zones.md` §3. "Boathouse bounces at draft 3.5" cannot be reproduced until it is put in
+  water. Its dormant `Draft = 3.5` stays as-is.
+- **Waterline, measured:** `ServerBoat` (reference) has the sea 1.6 studs below its `Main` top — cut
+  like a hull. `WoodenShip` has the sea **3.7 studs above** its `Main` top (sits deep, and is also the
+  hull with the stale client, D-01). `MisoSoup` floats with `Main` fully clear (0.85 studs).
 
 ### D-13 · `MisoSoup` draft is negative
 - **Object:** `Workspace.MisoSoup`, attribute `Draft = -7.3`.
@@ -150,6 +164,18 @@ fixes.
 - **Why it matters:** either a deliberate flag (this is the rarest ship) or a sign error. Sign errors
   in draft are exactly the class of bug the "waves colliding" report describes.
 - **Fix in:** prompt **07** — confirm intent with the user before changing.
+- **2026-10-26:** left unchanged. Its waterline measurement (`Main` clear of the water by 0.85 studs)
+  is consistent with a hull that is meant to ride high, but the sign is still unexplained.
+
+### D-17 · Legacy `BodyPosition`/`BodyGyro` left on a hull
+
+- **Object:** `Workspace.Boathouse.Prim.BodyPosition` (target `0, 0, 0`), `Workspace.Boathouse.Prim.BodyGyro`.
+- **Evidence:** neither is created by the current handler (see `Handler.server.luau`, which builds
+  `UnmannedBuoyancy`/`UnmannedOrientation` instead). A `BodyPosition` whose goal is the world origin
+  is a live hazard if anything ever enables it.
+- **Why it matters:** inert today, catastrophic if enabled; also confuses the ship script audit.
+- **Fix in:** prompt **07** — delete after confirming `Prim` is not needed. `MisoSoup` also has a
+  `Prim`; check it too.
 
 ---
 

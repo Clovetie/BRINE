@@ -42,8 +42,12 @@ The last session started in a **fresh sandbox with nothing in it**: no clone, no
    `tools/studio-probes/ocean/restart_play.sh`, `.../perf2.sh`,
    `tools/studio-probes/ocean/push_file.py`.
    `push_src.py` takes the repo path **relative to `/home/user/BRINE`**.
-5. **Secrets.** Before every commit: `git grep -n "github_pat\|<BRIDGE-TOKEN-REMOVED>"` must return
-   nothing.
+5. **Secrets.** Before every commit, grep the tree for the two secret prefixes and make sure it
+   returns nothing: the GitHub token prefix (`github_pat`) and the first 8+ characters of the Studio
+   bridge token. Do not paste either full value into any file -- including this one. (The first
+   version of this file quoted the bridge token verbatim inside the grep example, which is exactly
+   the mistake the rule exists to prevent. It was caught by running the grep, and that commit is
+   still in the branch history -- rotate the bridge token.)
 
 ---
 
