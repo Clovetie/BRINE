@@ -297,3 +297,25 @@ Remaining known *drift in content* (not script text): the Studio-only trees list
 `01-inventory.md` §2 (`UsefulFunctions`, `VoxBreaker`, the premade island payloads, the duplicated
 zone scripts D-10) still exist only in the place and would be lost by a rebuild from the repo. That
 is D-11 and it needs a decision, not a fix.
+
+### D-05 addendum (2026-10-26): asset `203785492` closed as **unattributable**
+
+The stray asset ID recorded in D-05 was hunted across the whole DataModel, three ways:
+
+| Method | Coverage | Result |
+|---|---|---|
+| String-property sweep, first pass | every string prop incl. `AnimationId`, `Texture`, `SoundId`, `Image`, `MeshId`, colour maps, skybox | 0 hits |
+| **`Content`-property sweep** (new this pass) | `MeshContent`, `TextureContent`, `ColorMapContent`, `NormalMapContent`, `RoughnessMapContent`, `MetalnessMapContent`, `EmissiveMaskContent`, `AudioContent` — **452 populated properties** over `workspace`, `ReplicatedStorage`, `ServerStorage`, `ServerScriptService`, `StarterPack`, `StarterPlayer` | **0 hits** |
+| Script source | all 79 `.luau` files under `src/` | 0 hits |
+| `Animation` objects | ID compare on every `Animation` in the DataModel | no match |
+
+The Content sweep mattered: the first pass only read `.Texture`-style *string* properties, and the
+modern mesh/editable-mesh API stores the same IDs as **Content** values. So the prior "not found"
+result had a real gap. It is now closed — the ID is in no populated property of any type anywhere in
+the DataModel.
+
+**Conclusion:** `203785492` is not attributable by inspection. It can only be found at join time, with
+either a `ContentProvider:PreloadAsync` request log or a `ContentProvider.RequestQueueSize` trace.
+That is a targeted runtime job, not a grep. **Closed as won't-fix by inspection**; downgraded from
+D-05's original severity because nothing in the place references it, so it cannot currently be
+rendering or playing.
