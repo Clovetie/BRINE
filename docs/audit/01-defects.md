@@ -12,7 +12,7 @@ fixes.
 
 ## P1 — visibly wrong
 
-### D-01 · `WoodenShip` runs a stale client script
+### D-01 · `WoodenShip` runs a stale client script — **FIXED in Studio 2026-10-26**
 - **Object:** `Workspace.WoodenShip.Client` (Studio) vs `src/Workspace/singletons/Ship/Client.client.luau` (repo).
 - **Evidence:** read-back diff, **repo 269 lines / Studio 243 lines, 45 diff lines**. The Studio copy
   is missing the `seaSurfaceAt(zone, now)` helper (the 4-corner mean the repo's `WaveFloat.Solve`
@@ -24,8 +24,11 @@ fixes.
   the ship tree.
 - **Direction:** repo → Studio (repo is newer).
 - **Fix in:** prompt **07**.
+- **Done:** pushed `src/Workspace/singletons/Ship/Client.client.luau` to `Workspace.WoodenShip.Client`
+  (`243 -> 269` lines) and read it back identical, 0 diff. All three hulls now run the same client.
+  Not yet verified in Play by anyone: whether WoodenShip's minimum sink improves is the user's check.
 
-### D-02 · `IslandConfig` is older in Studio than in the repo
+### D-02 · `IslandConfig` is older in Studio than in the repo — **FIXED in Studio**
 - **Object:** `ReplicatedStorage.IslandGeneration.IslandConfig`.
 - **Evidence:** `repo 256 / studio 251 lines, 23 diff lines`. Studio lacks `MaxCachedRecords = 3000`
   and carries the pre-4.1 wording of the `MaxIslandRadius` comment.
@@ -35,8 +38,10 @@ fixes.
   will silently have no effect.
 - **Direction:** repo → Studio.
 - **Fix in:** prompt **08**.
+- **Done:** the repo file (with D-03's real SFX values) was pushed to Studio and read back identical,
+  258/258 lines.
 
-### D-03 · The repo would ship **silent** island rise/sink audio
+### D-03 · The repo would ship **silent** island rise/sink audio — **FIXED**
 - **Object:** `src/ReplicatedStorage/IslandGeneration/IslandConfig.luau` vs the Studio module.
 - **Evidence:** repo `SoundId = "rbxassetid://0"`, `SoundVolume = 0.8` for **both** the rise and the
   sink SFX (`…/IslandConfig.luau`, placeholder comment "Replace the zero with your uploaded sound
@@ -46,6 +51,8 @@ fixes.
   fires `rbxassetid://0` load failures.
 - **Direction:** **Studio → repo** (Studio holds live tuning; the repo holds a placeholder).
 - **Fix in:** prompt **05** (sound) with prompt **08**.
+- **Done:** commit `1cb64e2` brought the repo up to the live ids/volumes; both sides then pushed to the
+  same source and read back identical.
 
 ### D-04 · Two `Splash` sounds loop forever at volume 0 on an unapproved asset
 - **Object:** `Workspace.WoodenShip.Prim.Splash`, `Workspace.Boathouse.Prim.Splash`.
@@ -98,7 +105,7 @@ fixes.
 - **Done:** pushed the repo file to Studio; verified 73 lines and
   `Config.Streaming.CameraMinReportInterval` present.
 
-### D-08 · Fishing rod UI tuning differs between repo and Studio
+### D-08 · Fishing rod UI tuning differs between repo and Studio — **FIXED**
 - **Object:** `StarterPack.StickFishingRod.FishingConfig` → `Config.Gui`.
 - **Evidence:** repo `{Distance = 0.2, Speed = 0.9, Angle = 0}`; Studio
   `{Distance = 0, Speed = 0.35, Angle = 35}`. Both files are 77 lines; only the `Gui` block differs.
@@ -107,6 +114,8 @@ fixes.
   runs. The user accepted fishing as "Normal" on the **Studio** values.
 - **Direction:** **Studio → repo**, pending the user's word (this one is a taste call, not a bug).
 - **Fix in:** prompt **06**.
+- **Done:** the user confirmed the Studio values are the ones to keep; commit `856fb63` ported them into
+  the repo, both sides read back identical at 80/80 lines.
 
 ### D-09 · A debug harness runs a PRECISE wave lookup every frame — **FIXED in Studio**
 - **Object:** `Workspace.SingleHeightLookup.LookupTesting` (`Workspace.SingleHeightLookup`, Script, 15 lines).
@@ -267,3 +276,24 @@ prompts 06/07 should do:
    built differently: only Boathouse has an engine sound, only two have a Splash).
 5. **Studio values are authoritative for tuning** where repo and Studio disagree on a taste value
    (applied to D-08).
+
+
+---
+
+## Parity state at the end of this pass
+
+Re-surveyed the live place after every Studio change. Current state:
+
+| | before | now |
+|---|---|---|
+| scripts in the place | 81 | **79** (2 duplicates/debug scripts deleted) |
+| repo files with a Studio counterpart | 41 -> 45 instances | 41 -> 45 instances |
+| ...that match byte-for-byte | 41 / 45 | **45 / 45** |
+| ...that differ | 4 | **0** |
+
+So the repo and the live place now agree completely on every script that exists in both.
+
+Remaining known *drift in content* (not script text): the Studio-only trees listed in
+`01-inventory.md` §2 (`UsefulFunctions`, `VoxBreaker`, the premade island payloads, the duplicated
+zone scripts D-10) still exist only in the place and would be lost by a rebuild from the repo. That
+is D-11 and it needs a decision, not a fix.
