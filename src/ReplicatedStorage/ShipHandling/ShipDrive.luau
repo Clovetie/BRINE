@@ -59,6 +59,61 @@ ShipDrive.Defaults = {
 	LeewayRatio = 0.3,
 } :: Tuning
 
+-- Every field a hull may override, in the order they appear in Tuning.
+local TUNING_FIELDS = {
+	"EngineAccel",
+	"ReverseAccel",
+	"BrakeAccel",
+	"DragLinear",
+	"DragQuadratic",
+	"LateralDamping",
+	"ThrottleSpool",
+	"MaxTurnRate",
+	"TurnReferenceSpeed",
+	"WindSpeed",
+	"SailAccel",
+	"LeewayRatio",
+}
+
+-- Resolve the tuning for one hull.
+--
+-- Until now every ship read Defaults directly, so a 125-stud, 19.5k-mass floating
+-- island (MisoSoup), an 88-stud schooner (WoodenShip) and a boathouse all accelerated,
+-- turned and stopped exactly like a 45-stud sloop. A hull now overrides any field by
+-- carrying a NUMBER attribute of the same name on the model:
+--
+--     WoodenShip: EngineAccel = 6.6, MaxTurnRate = 0.26
+--
+-- Nothing else is needed. The Client is cloned against its own ship model and the
+-- Handler sits inside the model, so both sides read the same attributes and resolve
+-- the same table; a field with no attribute keeps the Defaults value. Attributes are
+-- the tuning surface because they can be edited in Studio on the live place and read
+-- back, without a script round trip.
+function ShipDrive.Resolve(ship: Instance): Tuning
+	local tuning = table.clone(ShipDrive.Defaults)
+	local overrides = tuning :: any
+	for _, field in ipairs(TUNING_FIELDS) do
+		local value = ship:GetAttribute(field)
+		if typeof(value) == "number" then
+			overrides[field] = value
+		end
+	end
+	return tuning
+end
+
+-- Engine-only top speed of a hull: the positive root of
+-- EngineAccel = DragLinear*v + DragQuadratic*v^2. Used by the handling docs and by the
+-- Play check, so the numbers in the table can be predicted instead of only observed.
+function ShipDrive.TopSpeed(tuning: Tuning): number
+	local a = tuning.DragQuadratic
+	local b = tuning.DragLinear
+	local c = -tuning.EngineAccel
+	if a <= 0 then
+		return if b > 0 then tuning.EngineAccel / b else 0
+	end
+	return (-b + math.sqrt(b * b - 4 * a * c)) / (2 * a)
+end
+
 local function ramp(x: number, from: number, to: number): number
 	return math.clamp((x - from) / (to - from), 0, 1)
 end

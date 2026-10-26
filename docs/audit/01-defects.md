@@ -319,3 +319,33 @@ either a `ContentProvider:PreloadAsync` request log or a `ContentProvider.Reques
 That is a targeted runtime job, not a grep. **Closed as won't-fix by inspection**; downgraded from
 D-05's original severity because nothing in the place references it, so it cannot currently be
 rendering or playing.
+
+
+### D-17 (2026-10-26): **FIXED** — and it was live, not inert
+
+The Boathouse's four legacy constraints were removed from the place. Measured before removal:
+`Prim.BodyPosition` `Position (0,0,0)` with `MaxForce (0, 400000, 0)` (no `Enabled` property — parented
+means on) is a permanent 400 000 Y-force pulling the hull toward world Y = 0, about 74 % of the hull's
+own weight; `Prim.BodyGyro` holds upright with 200 000 X/Z torque against the wave pose;
+`Motor.Steer` is a `BodyAngularVelocity` at 0 rad/s with 2 011 493 Y torque, a steering lock;
+`Motor.VectorForce` is zero-force junk. No script references any of them. All three hulls now report
+`movers=0`; `ServerBoat` keeps its three and is untouched. See `07-ships.md` §2.
+
+### D-18 (new, **FIXED**): the buoyancy servo goal was in the wrong frame
+
+`WaveFloat.Solve` returns a **hull-centre** height, but `Ship.Handler` and `Ship.Client` wrote it into
+`AlignPosition.Position`, which in `OneAttachment` mode is a goal for the attachment on the
+`VehicleSeat`. On `WoodenShip` that put the goal 16.9 studs too low, so the servo saturated and held a
+steady **15.1-stud** error, and the anti-sink guard fought it. Fixed by converting into the mover's
+frame (`goal = here.Y + ((targetY - draft) - Main.Center.WorldPosition.Y)`); the error drops to 3.1 and
+the settled hull moves from offset −3.74 to +0.97. Guard reference default corrected the same way. This
+is why the per-hull `Draft` values looked arbitrary: they were compensating for a 15–17 stud frame
+error, not setting a waterline. See `07-ships.md` §3.
+
+### D-19 (new, recorded, **not** fixed): ship handling was one profile for the whole fleet
+
+Every hull read `ShipDrive.Defaults`, so the 125-stud, 19 565-mass `MisoSoup` handled exactly like a
+45-stud sloop. `ShipDrive.Resolve(ship)` now reads per-hull number attributes (and `ShipDrive.TopSpeed`
+exists for the docs/harness), with values set in Studio for the three hulls: top speeds 26.0 / 18.0 /
+13.9 studs/s and turn radii 113 / 163 / 58 studs against the reference's 29.1 / 58.2. See
+`07-ships.md` §4.

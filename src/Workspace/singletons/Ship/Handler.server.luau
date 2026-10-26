@@ -17,6 +17,13 @@ local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
 local Main = Ship:WaitForChild("Main") :: BasePart
 VehicleSeat:SetNetworkOwner(nil)
 
+-- This hull's own handling (ShipDrive.Resolve reads the model's attributes), re-read if
+-- the tuning attributes are changed while the ship is idle.
+local tuning = ShipDrive.Resolve(Ship)
+Ship.AttributeChanged:Connect(function()
+	tuning = ShipDrive.Resolve(Ship)
+end)
+
 local function registerCollisionGroup(name: string)
 	pcall(function()
 		PhysicsService:RegisterCollisionGroup(name)
@@ -240,7 +247,7 @@ RunService.PostSimulation:Connect(function(dt)
 			dt,
 			Vector3.zero,
 			0,
-			ShipDrive.Defaults
+			tuning
 		)
 		unmannedDrag.Force = drag * Main.AssemblyMass
 	end
@@ -275,18 +282,23 @@ RunService.PostSimulation:Connect(function(dt)
 		local here = moverAttachment.WorldPosition
 		buoyancy.Enabled = true
 		-- Draft (WoodenShip's attribute, 0 on Boat) lowers the goal, as in the Client.
+		-- Solve returns a HULL CENTRE height and the servo drives the seat attachment, so
+		-- convert into the mover's frame (see the note in Ship.Client).
 		local draft = Ship:GetAttribute("Draft") or 0
-		local goal = targetY - draft
+		local goal = here.Y + ((targetY - draft) - Main.Center.WorldPosition.Y)
 		buoyancy.Position = Vector3.new(here.X, goal, here.Z)
 		-- The guard's reference is the sea surface plus the ride height, less Draft. The
 		-- servo goal above is not usable for this: its drag term falls with the hull, so the
 		-- goal sinks as the hull sinks and the gap never grows. This reference stays put.
-		-- SinkRestOffset: where the hull rests relative to the sea surface. Default is the
+		-- SinkRestOffset: where the hull rests relative to the sea surface, measured at the
+-- mover (the seat), which is what ResolveVertical tests. Default is the
 		-- ride height less Draft (Boat). WoodenShip sets its own, measured at rest.
 		local surface = seaSurfaceAt(zoneInfo, now)
 		local reference = goal
 		if surface ~= nil then
-			reference = surface + (Ship:GetAttribute("SinkRestOffset") or (baseHeight - draft))
+			reference = surface
+				+ (Ship:GetAttribute("SinkRestOffset")
+					or (baseHeight - draft + (here.Y - Main.Center.WorldPosition.Y)))
 		end
 		-- Servo authority rises while the hull is below its band, so it can hold a load.
 		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, reference))

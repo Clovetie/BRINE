@@ -13,7 +13,12 @@ local WaveFloat = require(game.ReplicatedStorage.FloatingObjectGeneration.WaveFl
 local ShipDrive = require(game.ReplicatedStorage.ShipHandling.ShipDrive)
 -- Anti-climb and anti-sink (ROADMAP ship guard), shared with Ship.Handler.
 local ShipGuard = require(game.ReplicatedStorage.ShipHandling.ShipGuard)
-local tuning = ShipDrive.Defaults
+-- This hull's own handling (ShipDrive.Resolve reads the model's attributes), re-read
+-- if the tuning attributes are changed while the ship is in use.
+local tuning = ShipDrive.Resolve(Ship)
+Ship.AttributeChanged:Connect(function()
+	tuning = ShipDrive.Resolve(Ship)
+end)
 
 local Main = Ship:WaitForChild("Main") :: BasePart
 local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
@@ -235,8 +240,15 @@ RunService.PostSimulation:Connect(function(dt)
 		alignPosition.Enabled = true
 		-- Draft (WoodenShip's attribute, 0 on Boat) lowers the goal so the hull sits
 		-- under the surface like the Boat does.
+		--
+		-- Draft is measured against the HULL CENTRE, which is what Solve returns, but
+		-- the servo drives the attachment on the VehicleSeat. On a hull whose helm is
+		-- well above its centre (WoodenShip: 16 studs) writing the centre height into
+		-- the servo commands that much extra sink; the servo saturates, the hull lags
+		-- the waves and the water rides over the deck. Put the goal in the mover's own
+		-- frame instead: the hull centre then settles exactly on targetY - Draft.
 		local draft = Ship:GetAttribute("Draft") or 0
-		local goal = targetY - draft
+		local goal = here.Y + ((targetY - draft) - Main.Center.WorldPosition.Y)
 		alignPosition.Position = Vector3.new(here.X, goal, here.Z)
 		-- Servo authority rises while the hull is below its band, so it can hold a load.
 		-- Guard reference: sea surface plus SinkRestOffset (default baseHeight - Draft).
@@ -244,7 +256,9 @@ RunService.PostSimulation:Connect(function(dt)
 		local surface = seaSurfaceAt(currentZoneInfo, now)
 		local reference = goal
 		if surface ~= nil then
-			reference = surface + (Ship:GetAttribute("SinkRestOffset") or (baseHeight - draft))
+			reference = surface
+				+ (Ship:GetAttribute("SinkRestOffset")
+					or (baseHeight - draft + (here.Y - Main.Center.WorldPosition.Y)))
 		end
 		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, reference))
 		alignPosition.MaxAxesForce = Vector3.new(0, maxForce * (1 + (depth / 10) + reserve), 0)
