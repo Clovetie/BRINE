@@ -217,3 +217,27 @@ user's clip or screenshot before concluding what "colliding" means.
 
 Highest-value fix by consequence: **D-01** — it is the only mechanical explanation on record for one
 of the named ship bugs, and it is a single file push in the repo → Studio direction.
+
+---
+
+## Requirements captured from the user (2026-10-26 session)
+
+Asked directly during this pass. These are product requirements, not defects, and they change what
+prompts 06/07 should do:
+
+1. **"All of the above"** for the collision symptoms — the user confirmed all four of: objects
+   hovering/sinking through the water, waves visually intersecting, water punching through hulls,
+   and tearing/stepping at a distance. S2 covers hover/sink, S1 covers distant stepping. Waves
+   intersecting each other and water through a hull are **not yet explained** and stay open.
+2. **Vertex jitter and ocean performance are the priority** for the next pass.
+3. **Per-ship speed and steering settings.** "Each ship must have their own settings for speed and
+   steering etc." Today `Ship/Client.client.luau` and `Ship/Handler.server.luau` are a single
+   template deployed to all three ships, so all three share one tuning. This is a **new
+   requirement** for prompt 07, not a bug — and it interacts with D-01 (WoodenShip still runs an
+   older copy of that shared client), so D-01 should be fixed *before* the per-ship split, or the
+   split will be applied to a stale baseline.
+4. **Not every ship has a sail.** `ShipDrive` currently assumes a rig; the drive must tolerate a
+   ship with no `Sail` part. Relevant to prompt 07 together with D-12 (the three ships are already
+   built differently: only Boathouse has an engine sound, only two have a Splash).
+5. **Studio values are authoritative for tuning** where repo and Studio disagree on a taste value
+   (applied to D-08).
