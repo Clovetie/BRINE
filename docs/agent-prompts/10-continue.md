@@ -63,6 +63,15 @@ Branch `arena/ocean-sound-and-audit`, PR #9 into `main`. `main` is at `525a9ec` 
 | `856fb63` | Fishing: adopt live rod-UI tuning (D-08) |
 | `1cb64e2` | Islands: real rise/sink SFX ids (D-03) |
 | `6e6d565` | Audit: record the user's ship requirements |
+| `142c509` | This continuation prompt |
+| `cb1adbd` | Fold analysis (no folds anywhere) + Studio cleanup (79 scripts) |
+| `a4ef9a0` | `Ship/Client` onto the live `WoodenShip`, parity 45/45 |
+| `bcfba3c` | Audit 05 + 06: sound and fishing measured; D-05 closed by inspection |
+| `a1b2685` | **Ships: per-hull handling, servo goal frame (D-18), Boathouse movers (D-17)** |
+
+**Nothing after `a4ef9a0` is pushed**: this session had no GitHub token and no `origin`
+(`git remote -v` is empty), so `bcfba3c` and `a1b2685` are local commits on the branch.
+Push them with the token URL before opening or updating PR #9.
 
 Read next, in this order: `docs/audit/01-defects.md` (the work list),
 `docs/audit/02-waves-findings.md` (what S1/S2/S3 mean and the numbers),
@@ -74,6 +83,27 @@ Read next, in this order: `docs/audit/01-defects.md` (the work list),
 ---
 
 ## 2. Tooling that now exists — use it, do not rebuild it
+
+### `tools/studio-probes/bridge/parity_hash.py <survey.json>` (new, committed)
+
+The only parity check to trust. It compares the plugin's own `hash` per declared pair and
+reports trailing-newline-only pairs as matches. Dump the survey first:
+
+```bash
+MCP_MAX=8000000 python3 .mcp/call.py survey_place '{"includeSource":true}' > /tmp/s.json
+python3 tools/studio-probes/bridge/parity_hash.py /tmp/s.json
+```
+
+### `tools/studio-probes/ships/apply_ship_attributes.py` (new, committed)
+
+The per-hull ship tuning is **attributes on the models**, which Rojo cannot carry, so the
+script is the source of truth. `--check` reads the place back and prints what it holds.
+
+### `bash tools/measure/ship-tuning.sh` (new, committed)
+
+Prints each hull's top speed, 0-90 % time, coast curve and turn radius by running the real
+`ShipDrive.luau` under plain Luau. Use it before claiming a handling number.
+
 
 ### `tools/measure-height-error.sh` (new, committed)
 
@@ -145,6 +175,19 @@ if both agree on direction.
    controlled comparison and **not** a regression. Do not cite it as one.
 5. **`find-dead-config.js` reports "0 config keys, no dead keys" for `Gerstner/Settings`** — a false
    pass on the one file whose dead keys matter (D-15). It does not understand that module's shape.
+6. **`07-ships-and-physics.md` names ships that do not exist.** `Boat`, `Boat1` and `Template` are not
+   in the place; the fleet is `ServerBoat` (reference, legacy handler), `WoodenShip`, `MisoSoup`,
+   `Boathouse`. Every draft/sink row in that prompt mentioning the missing three is void.
+7. **There is no `Workspace.singletons` in the place.** The Rojo project maps it, but each ship model
+   carries its own `Handler` and `Client` copy. A change to "the singleton" must be pushed three times,
+   and each hull can silently drift (that was D-01). `parity_hash.py` checks all three.
+8. **`survey_place` withholds `source` for large scripts** (`sourceWithheld: true`), so a
+   source-comparison parity report shows every big script as a difference and prints "studio 0 lines".
+   Use `tools/studio-probes/bridge/parity_hash.py <survey.json>` instead: it compares the plugin's own
+   `hash` (FNV-1a 32) and reports trailing-newline-only pairs as matches. Current state: **32/32 match,
+   0 differ, 0 missing**.
+9. **`BodyPosition` has no `Enabled` property.** If it is parented it is on, which is why the
+   Boathouse's legacy movers were live rather than inert. Do not read "no `Enabled`" as "disabled".
 
 ---
 
@@ -185,6 +228,25 @@ Carried forward from `00-README.md`, plus what changed this session:
 
 ### Closed with numbers
 
+**Prompt 05 (sound)** — all 10 `AmbientSea` tracks and both unused user IDs load at their
+documented lengths; calm `s=0.30` → CalmBed 0.44 / Beach 0.12 / Rough 0 / Wind 0.08, rough
+`s=1.00` → Rough 0.60 / Wind 0.35 / Beach 0.14 / CalmBed 0; fixed-camera depth gives
+camY 60 → depth −35.07 / UW 0, camY 24 → −0.04 / UW 0, camY 19 → +3.34 / UW 0.67; night →
+Crickets 0.35 / NightWind 0.30 / Birds 0, day → Birds 0.25. The mix has never been judged by
+ear — that is the user's call. See `docs/audit/05-sound.md`.
+
+**Prompt 06 (fishing)** — no `AlignPosition`/`AlignOrientation`/`BodyVelocity`/`BodyPosition`
+anywhere in the fishing sources; the grab is a `DragDetector` built per caught fish
+(`makeDragDetector`, line 375, called at 514), so a rod with nothing caught reports 0
+legitimately. `FishEvent` + `Action` live on `tool.FishingRemotes`. A full cast→catch→drag
+cycle was **not** observed. See `docs/audit/06-fishing.md`.
+
+**Prompt 07 (ships)** — see `docs/audit/07-ships.md`. Settled `Main.Center` offsets after the
+fix: `WoodenShip` +0.88, `MisoSoup` +0.48, `Boathouse` +0.73; before the fix `WoodenShip`
+sat at −4.00 with its deck 2.3 studs under water. Per-hull handling live: tops 26.0 / 18.0 /
+13.9 studs/s, turn radii 113 / 163 / 58 against the reference's 29.1 / 58.2. The reference
+`ServerBoat` rides **12.4 studs above** the water — that is the hover, and it is out of bounds.
+
 | Item | Result |
 |---|---|
 | S2 rest-vs-displaced | p99 **1.2986 → 0.0094** studs at rough sea; live engine check 0.0010 studs. Fixed in `WaveFloat.HeightAt`. |
@@ -196,9 +258,22 @@ Carried forward from `00-README.md`, plus what changed this session:
 
 ### Open
 
-- **Two of the user's four collision symptoms are unexplained**: *waves visually intersecting each
-  other*, and *water punching through hulls*. S2/S1 explain the other two (hover/sink, distant
-  stepping). See §6 action 1.
+- **"Waves intersecting each other" is ruled out as a fold.** `bash tools/measure/jacobian.sh` runs
+  finite differences on the real `ComputeTransform`: 0 folds in calm, rough, the live field, ×1.5 and
+  ×2.0 amplitude, and inside the `RoughSeaArea` zone despite its `AmplitudeMultiplier = 2.5`
+  (Σ steepness 1.725 > the classic ≤ 1 rule) — so that zone is **measured safe**, do not "fix" it.
+  Only a uniform ×2.5 produced a single fold (1 in 41 405 samples). If a user still sees intersecting
+  waves it is a rendering/LOD seam, not the height function.
+- **"Water through hulls" is hull depth, not crest height**: freeboard is 34–60 studs against a
+  4.73-stud crest envelope, so no crest reaches any deck. It was the deck sitting *under* the water —
+  now D-18, fixed, but the absolute waterline per hull is still a taste value.
+- **Ship-on-ship climb** was not re-run this session (needs two hulls driven together with a client
+  aboard). Last numbers stand: side control `Boat` 3.22, `WoodenShip` 3.35.
+- **The 6 Hz vertical vibration** on a settling hull could not be separated from server load
+  (`dt` ranged 12.5–54 ms while probing). If it shows at a steady 60 fps, try
+  `Responsiveness = 6` in `Handler`/`Client`.
+- **The occupied (`Client`) path** was never sampled: every ship number here is the server's unmanned
+  path. Boarding a hull is the check.
 - **S4** detail boundary at `MeshDetailDistance = 120`: not measured.
 - **S6** stale chunks past `MaxChunkRenderDistance = 800`: not measured (belongs with prompt 04).
 - **A2** is met for the write cadence by construction, but there is no full calm→rough transition
@@ -214,56 +289,32 @@ Carried forward from `00-README.md`, plus what changed this session:
 
 ## 6. What I would do next, in order
 
-**1. Explain the two remaining collision symptoms analytically (no user needed).** This is the
-   highest-value open question and it is cheap:
+**0. Push.** `git remote add origin https://<token>@github.com/Clovetie/BRINE.git` and push
+   `arena/ocean-sound-and-audit`. `bcfba3c` and `a1b2685` are local only.
 
-- *Waves intersecting each other* is a **self-intersection / fold** question, and it is decidable
-  without playing: compute the determinant of the displacement map's horizontal Jacobian,
-  `J = I + Σ Q_i k_i A_i [dir dx², dx dz; dz dx, dz²] · (-sin φ_i)`, over a grid and a few times. A
-  negative determinant means the surface folds over itself and the render will show waves crossing.
-  The steepness parameters sum to 0.69, which is *below* the classic Σ Q ≤ 1 no-loop bound, so I
-  expect no folds and the cause to be something else (chunk-boundary seams, or the far lerp) — but
-  measure it rather than assuming. The `tools/measure` harness gives you the real module in-process.
-- *Water through hulls* is a **freeboard vs crest** question: amplitude sum is 4.73 studs, so if a
-  hull's deck sits less than ~4.73 studs above mean water, the crest will visually wash over it.
-  Each ship carries a `Draft` attribute (`WoodenShip 5.5`, `Boathouse 3.5`, `MisoSoup -7.3` — the
-  negative one is suspicious, D-13) and `WoodenShip`/`MisoSoup` carry `SinkRestOffset`. Compute
-  freeboard per hull from the geometry and compare against the crest envelope.
+**1. Prompt 08 — floating objects and islands (the remainder).** Not started. Read
+   `docs/agent-prompts/08-floating-and-islands.md` and re-check its premises against
+   `docs/audit/01-defects.md` first; `01`'s inventory was written before five fixes landed. Known hooks:
+   `FloatingObjectGenerator` is 2 000+ lines with its own buoyancy loop (`startBuoyancyLoop`,
+   `applyBuoyancyTarget`) and a budget system (`NearMaxTargetUpdatesPerFrame` 24,
+   `MaxTargetUpdatesPerFrame` 48); `WaveFloat.Solve`'s mover-frame bug (D-18) is **ship-only**, because
+   floating props build their own `AlignPosition` per record — check whether they share the same
+   centre-vs-attachment error before assuming they are fine.
+   The user's standing rules: floating objects must not despawn or be culled in a player's sight; do
+   not add overhang-sink code for platforms without support underneath.
 
-**2. Prompt 09 debug/leftover sweep in Studio** (all read-and-verify, low risk, each its own commit):
+**2. Prompt 09 — polish and debug sweep.** The audit list is the input; `01-defects.md` carries the
+   current state of every item, including the ones that were closed with numbers this week.
 
-- Delete `Workspace.SingleHeightLookup.LookupTesting` — a 15-line Script running
-  `HeightLookup.Lookup(..., 'PRECISE', ...)` on **every `Stepped` frame** forever, plus a replicated
-  position write. It also contaminates any Play measurement.
-- Delete the duplicate `ReplicatedStorage.Gerstner.init` (341 lines, same hash `13697039` as its
-  parent, required by nothing).
-- Fix `ServerScriptService.FloatingObjectGenerationServer` in Studio: it hardcodes
-  `minInterval = 0.1` instead of reading `Config.Streaming.CameraMinReportInterval`, and declares an
-  unused `Config`. Direction: repo → Studio.
-- Deal with the two `Splash` sounds on `rbxassetid://167123203`, which is **not approved**: 30 of the
-  45 console warnings in one session, volume 0, looping, playing. Either delete the sound objects or
-  find an approved id — ask the user which, do not invent an id.
-- Attribute `rbxassetid://203785492` ("Asset type does not match requested type", 15 of 45
-  warnings). It is **not** in any instance property or any script; re-check from a live client where
-  the requester is named.
-- Decide and record what to do about the third-party trees that exist only in Studio
-  (`UsefulFunctions` 835 lines + 12 UI scripts, `VoxBreaker` 1407 + `PartCache`): vendor them under
-  `src/` or document that the place must not be rebuilt from the repo. D-11.
+**3. The open verification list, in `01-defects.md` order** — ship-on-ship climb, the occupied
+   (`Client`) path on each hull, the 6 Hz vibration at a steady 60 fps, and the two sound fades that
+   need a random timer (`Gust` on rough only, `Birds` by day) rather than a volume read.
 
-**3. Prompt 04 seam/immersion measurements.** The seam is hidden by client fog 500→880; that is
-   runtime-only, so read `Lighting.FogStart/FogEnd` from a **client** probe in Play and confirm the
-   numbers and that the mesh outer edge (planes at ±1872, mesh local ±936) is actually inside the
-   fog. Then chase S6.
-
-**4. Prompt 05 sound.** Ten sounds in `AmbientSea`; verify all 12 user ids load **by reading
-   `Sound.IsLoaded`/`TimeLength`**, not by volume alone. The mix has been verified by volume reads
-   and never by ear — say so. The calming track `131586509457092` and the cave track `273398061` are
-   unused: ask before deleting or wiring them in.
-
-**5. Prompt 06 fishing regression, 08 floating/islands.** Not started.
-
-**6. Prompt 07 ships** — but only the parts that need no design input: D-01 (`WoodenShip.Client` is
-   stale, repo → Studio, read back), then the per-hull tuning split the user asked for.
+**4. Only then ask the user.** They said "don't ask anything from me yet". The questions waiting for
+   them, in importance order: (a) does the fleet waterline look right now that `Draft` is a clean 1:1
+   lever, and should the hulls ride higher (toward the reference's +12.4) instead; (b) is the per-hull
+   handling spread (26 / 18 / 14 studs/s) the direction they want, given the `ServerBoat` they drive
+   does 29; (c) the unused 133 s calming sound — wire it in or leave it.
 
 ---
 
