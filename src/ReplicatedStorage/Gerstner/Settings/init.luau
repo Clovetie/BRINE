@@ -161,7 +161,16 @@ local Settings = {
 	-- // thread. Writes are staggered by vertex id so the cost is spread over frames. 1 = write
 	-- // every frame (the original behaviour, used for A/B tests).
 	PERF = {
-		FAR_WRITE_EVERY = 3, -- // far (low-detail) vertices: position and colour written every N frames
+		-- // FAR_WRITE_EVERY = 1: far vertices are written EVERY frame. The budget
+		-- // was 3 and it quantised the far field to 20 Hz, which is the distant
+		-- // stepping/shimmer: at SeaState 1.0 a far vertex moved 0.151 studs per
+		-- // write (p99 0.253) at 3, against 0.050 (p99 0.085) at 1. Measured cost
+		-- // of writing every frame: serial 0.149 -> 0.226 ms per worker per frame,
+		-- // i.e. about +0.46 ms/frame across six workers, over two sessions.
+		-- // See docs/audit/02-waves-findings.md.
+		FAR_WRITE_EVERY = 1, -- // far (low-detail) vertices: position and colour written every N frames
+		-- // The UV scroll is a texture scroll, not geometry, so 20 Hz is invisible
+		-- // and this keeps most of the write saving (225 vs 237 writes/worker).
 		UV_WRITE_EVERY = 3, -- // UV scroll written every N frames (the scroll is slow)
 		REPORT_EVERY = 0, -- // dev only: warn a write-time summary every N frames per worker (0 = off)
 	},

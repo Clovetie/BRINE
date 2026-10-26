@@ -26,11 +26,11 @@ Self-check that the harness loaded the real module: the reconstructed wave table
 | # | Suspect (from the prompt) | Verdict | Evidence |
 |---|---|---|---|
 | **S2** | **Rest-vs-displaced mismatch** | **CONFIRMED, structural, and fixed.** p99 error **1.2986 studs** at SeaState 1.0; the mesh and physics disagree by more than a stud in a rough sea. | §1 below |
-| S1 | Far-vertex write budget (`FAR_WRITE_EVERY=3`) | **Present and armed, not yet measured.** Still live in `Settings/init.luau:164`. Needs an in-Play client probe; `capture_viewport` cannot judge water. | §4 |
-| S3 | Sea-state term inside the far-vertex lerp | Not yet measured. Same dependency (needs in-Play client vertex reads). | §4 |
-| S4 | Detail boundary at `MeshDetailDistance = 120` | Not yet measured. | §4 |
-| S5 | Zone multipliers in one path only | **Checked by reading, no mismatch found.** Both paths take `PhaseMultiplier`, `SpeedMultiplier`, `AmplitudeMultiplier`; `WaveFloat.HeightAt` reads them into `phase/speed/amplitude` and passes the same triple to `ComputeTransform`, which the mesh path also calls. | §5 |
-| S6 | Stale far chunks past 800 | Not yet measured; belongs with the seam work in prompt 04. | §4 |
+| **S1** | **Far-vertex write budget** | **CONFIRMED as a real 20 Hz quantisation, and fixed.** A far vertex jumped 0.151 studs per write (p99 0.253) at `FAR_WRITE_EVERY=3` versus 0.050 (p99 0.085) at 1. `FAR_WRITE_EVERY` is now 1. | §4 |
+| S3 | Sea-state term inside the far-vertex lerp | **Dismissed with a bound:** ΔSeaState ≤ 0.0015 per lerp window, a 0.15% amplitude difference. Lerp chord sag ≈ 0.001 studs. | §5 |
+| S4 | Detail boundary at `MeshDetailDistance = 120` | **Not measured.** | §7 |
+| S5 | Zone multipliers in one path only | **Checked by reading, no mismatch found.** Both paths take `PhaseMultiplier`, `SpeedMultiplier`, `AmplitudeMultiplier`; `WaveFloat.HeightAt` reads them into `phase/speed/amplitude` and passes the same triple to `ComputeTransform`, which the mesh path also calls. | §6 |
+| S6 | Stale far chunks past 800 | **Not measured**; belongs with the seam work in prompt 04. | §7 |
 
 ---
 
@@ -170,31 +170,114 @@ eye.
 
 ---
 
-## 4. S1/S3/S4/S6 — still open, and why
+## 4. S1 — measured, confirmed as a real 20 Hz quantisation, and fixed
 
-These are all *visual* jitter claims about the far-vertex path. Measuring them means reading
-`EditableMesh` vertex positions frame-to-frame from a **client** probe, in windows under 15 s
-(the client RPC limit). That is the right measurement and it is still to do — the numbers in this
-file do not yet support or reject S1.
+S1 was the far-vertex write budget: far vertices were written every 3rd frame while near vertices
+were written every frame.
 
-What *is* established: `FAR_WRITE_EVERY = 3` and `UV_WRITE_EVERY = 3` are live
-(`Settings/init.luau:164-165`, consumed at `ParallelWorker.client.luau:104-105`), so far vertices
-provably update on a different frame cadence from near vertices. A 3-frame cadence at 60 fps is a
-20 Hz stepping on the far field; whether it reads as a spasm at the amplitudes in play is the open
-question.
+### The measurement
 
-**A2 (no periodic 3-frame pattern over a calm→rough transition) is NOT met yet.** Do not read this
-document as closing prompt 02.
+With the real `Gerstner` module, the displacement a vertex makes between two times is:
+
+| writes every | effective rate | SeaState | mean \|ΔP\| | p99 \|ΔP\| | max |
+|---|---|---|---|---|---|
+| 1 frame | 60 Hz | calm 0.30 | 0.0151 | 0.0254 | 0.0255 |
+| 2 frames | 30 Hz | calm 0.30 | 0.0302 | 0.0507 | 0.0508 |
+| **3 frames** | **20 Hz** | calm 0.30 | **0.0453** | **0.0758** | 0.0761 |
+| 1 frame | 60 Hz | rough 1.00 | 0.0504 | 0.0847 | 0.0849 |
+| 2 frames | 30 Hz | rough 1.00 | 0.1007 | 0.1690 | 0.1694 |
+| **3 frames** | **20 Hz** | rough 1.00 | **0.1509** | **0.2528** | 0.2535 |
+
+So at rough sea a far vertex jumped **0.151 studs per write on average (p99 0.253)**, three times
+the 0.050 (p99 0.085) it moves in a single frame. The far field was effectively being re-posed at
+20 Hz in 0.15–0.25 stud steps while the near field moved smoothly at 60 Hz. That is a textbook
+distant shimmer, and the brief's own estimate ("about 0.12 stud per step") was close.
+
+The prompt's suggestion that this might read as a "20 Hz jitter" is therefore confirmed as a
+mechanism, with a measured step size — not merely plausible.
+
+### The fix
+
+`Settings.PERF.FAR_WRITE_EVERY` 3 → **1**. `UV_WRITE_EVERY` stays 3: the UV scroll is a texture
+scroll, not geometry, and does not produce vertex stepping.
+
+Measured cost, in Studio with `REPORT_EVERY = 300`, two sessions per variant (§3 of
+`03-perf.md` has the full table):
+
+| variant | writes/worker/frame | serial ms/worker/frame | parallel ms/worker/frame |
+|---|---|---|---|
+| FAR=3, UV=3 (old) | 127.0 / 136.5 | 0.144 / 0.153 | 0.445 / 0.484 |
+| **FAR=1, UV=3 (new)** | **225.0 / 225.5** | **0.228 / 0.223** | 0.510 / 0.511 |
+
+Both sessions agree on direction. The cost is **+0.077 ms per worker**, about **+0.46 ms/frame**
+across the six workers, on the main thread. Against a 16.7 ms frame that is 2.8%, and it buys back
+the 3× stepping.
+
+### What I could not verify
+
+**That the visible shimmer is gone.** I have the step-size numbers and the cost, but judging the
+look of the water needs the user's eye — `capture_viewport` is a software rasteriser that does not
+draw Roblox water. This fix should be checked in Play, and if the distance still shimmers the cause
+is one of S4/S6 below rather than the write cadence.
 
 ---
 
-## 5. S5 — checked, no mismatch
+## 5. S3 — checked analytically, dismissed with a bound
+
+The prompt suspected that the far path's lerp mixes two different sea states. It does read
+`SeaStateAt` at the goal time, but the field is slow:
+
+```
+field  = sin(x/330 + t/95) + sin(z/270 - t/140 + 1.3) + sin((x+z)/510 + t/210 + 2.1)
+|d(field)/dt| <= 1/95 + 1/140 + 1/210 = 0.0224 per second
+```
+
+Over one lerp window (a few frames, under 0.1 s) that is Δfield ≤ 0.0022, and through the
+smoothstep and the 0.3→1.0 range that is **ΔSeaState ≤ 0.0015**, i.e. a 0.15% amplitude difference
+between the two lerp endpoints. Not a visible artefact, and not worth spending a frame budget on.
+
+The lerp itself is also geometrically fine: it is a straight chord across a sinusoid, and the sag for
+the fastest wave (L = 25, ω = 1.57 rad/s) over a 0.1 s window is about `A(ωΔt)²/8 ≈ 0.001` studs.
+
+---
+
+## 6. S5 — checked by reading, no mismatch
 
 `WaveFloat.HeightAt` and the mesh path both apply the zone triple. `HeightAt` reads
 `zone.PhaseMultiplier`, `zone.SpeedMultiplier`, `zone.AmplitudeMultiplier` (defaulting each to 1)
 and passes `phase, speed, amplitude` — in that order — to `Gerstner.ComputeTransform`, which is the
 same function `ParallelWorker` uses. `HeightLookup.Lookup` takes the multipliers in a **different
 order** (speed, phase, amplitude), and `WaveFloat` already documents and translates that. No defect.
+
+---
+
+## 7. Still open
+
+| # | Suspect | Status |
+|---|---|---|
+| S4 | Detail boundary at `MeshDetailDistance = 120` | **Not measured.** Needs a camera stepped across the boundary while reading vertices. |
+| S6 | Stale far chunks past `MaxChunkRenderDistance` 800 | **Not measured.** Related to the seam work in prompt 04; my vertex probe found 1192 far vertices behind the camera that get no computation at all, which is the same mechanism. |
+
+**A2 is now met for the write cadence** (the 3-frame pattern is gone by construction, and the
+step-size table shows the mechanism it removed) **but not for a full calm→rough transition trace**,
+which still needs the client vertex probe run across a transition. That probe exists now (see
+"Probe notes" below) and is cheap to repeat.
+
+### Probe notes, so this is repeatable
+
+Reading the live mesh from a client probe works:
+
+```
+local em = game:GetService("AssetService"):CreateEditableMeshAsync(plane.MeshContent)
+em:GetVertices()   -- 3301 vertices for the OceanPlane
+em:GetPosition(id) -- live, distorted positions
+```
+
+Each call is a **4.15 ms** copy, and taking one per rendered frame drops the client to **20 fps**, so
+per-frame sampling perturbs the thing it measures. Use it for step size and continuity, not for
+frame-rate claims. Also note ~1192 mesh vertices sit outside the view frustum and receive no
+computation on any frame — classify "far" vertices by frustum containment, not by distance alone,
+or the sample is dominated by static vertices.
 
 ---
 
