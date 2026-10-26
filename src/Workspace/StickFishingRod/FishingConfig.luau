@@ -42,13 +42,12 @@ Config.Float = {
 	EnterBand = 1.0,     -- a falling fish lands on the water within this height
 }
 
--- Grab: Roblox physics constraints (AlignPosition / AlignOrientation) -----------
+-- Grab: Roblox's built-in DragDetector (ResponseStyle Geometric) -------------------
+-- While a player holds the fish, its floating and physics are off: the DragDetector
+-- moves it exactly where the cursor puts it. On release it floats again.
 Config.Grab = {
-	Range = 22,          -- how far a caught fish may be from the player to grab it
-	Leash = 40,          -- auto-release beyond this distance
-	SendInterval = 0.05, -- seconds between drag position updates from the client
-	Responsiveness = 18, -- AlignPosition responsiveness
-	ForceMultiplier = 6, -- AlignPosition max force, in multiples of the fish's weight
+	Range = 22,                   -- MaxActivationDistance and the furthest the fish can be dragged from the player
+	DragStyle = "TranslateViewPlane", -- DragDetectorDragStyle name: moves in a plane facing the camera, so you can lift it
 }
 
 -- Viewport (the FishingRodUI picture) -------------------------------------------

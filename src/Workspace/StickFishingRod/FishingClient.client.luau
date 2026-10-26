@@ -1,6 +1,7 @@
--- FishingClient: casting input, the FishingRodUI viewport (floated in front of the camera
--- by Workspace.FloatingGui), and grabbing caught fish. The viewport has its own
--- client-side Camera; nothing here changes the world. Tuning lives in FishingConfig.
+-- FishingClient: casting input and the FishingRodUI viewport (floated in front of the camera
+-- by Workspace.FloatingGui). Grabbing a caught fish is Roblox's built-in DragDetector, so
+-- there is no drag code here. The viewport has its own client-side Camera; nothing here
+-- changes the world. Tuning lives in FishingConfig.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -25,7 +26,6 @@ local WIGGLE_SPEED = Config.Viewport.WiggleSpeed
 local WIGGLE_YAW = Config.Viewport.WiggleYaw
 local HIDE_AFTER_CATCH = Config.Viewport.HideAfterCatch
 local HIDE_AFTER_CANCEL = Config.Viewport.HideAfterCancel
-local DRAG_SEND_INTERVAL = Config.Grab.SendInterval
 local CAST_TIMEOUT = Config.Cast.ClientTimeout
 
 local CANCEL_TEXT = {
@@ -383,10 +383,6 @@ local function castTarget(): Vector3
 	return ray.Origin + ray.Direction * 80
 end
 
-local dragFish: Model? = nil
-local dragHeight = 0
-local lastDragSend = 0
-
 local castSerial = 0
 
 tool.Activated:Connect(function()
@@ -395,9 +391,10 @@ tool.Activated:Connect(function()
 		action:FireServer("Hook")
 		return
 	end
-	if dragFish or sceneActive then
+	if sceneActive then
 		return
 	end
+	-- A click on a caught fish is a grab (DragDetector), not a cast.
 	if fishUnderCursor() then
 		return
 	end
@@ -412,47 +409,4 @@ tool.Activated:Connect(function()
 			hideUi()
 		end
 	end)
-end)
-
-UserInputService.InputBegan:Connect(function(input, processed)
-	if processed or input.UserInputType ~= Enum.UserInputType.MouseButton1 then
-		return
-	end
-	local fish = fishUnderCursor()
-	if fish and fish.PrimaryPart then
-		dragFish = fish
-		dragHeight = fish.PrimaryPart.Position.Y
-		action:FireServer("DragStart", fish)
-	end
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 and dragFish then
-		dragFish = nil
-		action:FireServer("DragEnd")
-	end
-end)
-
-RunService.RenderStepped:Connect(function()
-	if dragFish == nil then
-		return
-	end
-	if dragFish.Parent == nil then
-		dragFish = nil
-		return
-	end
-	local now = os.clock()
-	if now - lastDragSend < DRAG_SEND_INTERVAL then
-		return
-	end
-	local ray = mouseRay()
-	if math.abs(ray.Direction.Y) < 0.001 then
-		return
-	end
-	local t = (dragHeight - ray.Origin.Y) / ray.Direction.Y
-	if t <= 0 then
-		return
-	end
-	lastDragSend = now
-	action:FireServer("DragMove", ray.Origin + ray.Direction * t)
 end)

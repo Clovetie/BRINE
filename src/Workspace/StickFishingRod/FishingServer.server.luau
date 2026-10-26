@@ -12,7 +12,8 @@
 --
 -- Caught fish: reeled up to the player (anchored, scripted path), released behind the
 -- player with physics, then it lands on the water and rides the surface (anchored).
--- A grab unanchors it and uses AlignPosition/AlignOrientation, with its collision off.
+-- Grab: a built-in DragDetector (Geometric). While held, the floating code skips the
+-- fish entirely (no water spring, no physics) and its collision stays off.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -273,19 +274,10 @@ local function collisionRestore(f: any)
 end
 
 -- Caught fish: reel, release, float -------------------------------------------
--- Entries: { fish, primary, state, player, t0, start, yaw, collide, x, z }
+-- Entries: { fish, primary, state, player, t0, start, yaw, collide, x, z, dd, dragging, ... }
 -- States: "reel" (anchored, pulled up to the player), "air" (physics),
--- "water" (anchored, rides the surface), "drag" (grabbed, physics).
+-- "water" (anchored, rides the surface). A dragging flag overrides all of them.
 local floaters: { any } = {}
-
-local function findFloater(fish: Instance): any?
-	for _, f in ipairs(floaters) do
-		if f.fish == fish then
-			return f
-		end
-	end
-	return nil
-end
 
 -- Hold point: in front of the player, above the head, so the fish clears them on release.
 local function holdPoint(hrp: BasePart): Vector3
@@ -317,11 +309,83 @@ local function releaseFish(f: any)
 	root.AssemblyLinearVelocity = back * CATCH.ThrowBack + Vector3.new(0, CATCH.ThrowUp, 0)
 	root.AssemblyAngularVelocity = Vector3.new(math.random() * 4 - 2, math.random() * 4 - 2, math.random() * 4 - 2)
 	f.state = "air"
+	f.dd.Enabled = true
 
 	if castPlayer == f.player then
 		castPlayer = nil
 	end
 	setRest()
+end
+
+-- Grab: Roblox's built-in DragDetector ----------------------------------------
+-- Geometric response: the engine moves the fish exactly where the cursor puts it. While
+-- a player holds it, the floating code skips it, so its floating physics are off.
+-- CanCollide stays off while held; it is restored on release.
+local DRAG_STYLE = Enum.DragDetectorDragStyle[GRAB.DragStyle]
+
+local function onDragStart(f: any, player: Player)
+	if f.dragging or f.state == nil or f.state == "reel" then
+		return
+	end
+	local hrp = hrpOf(player)
+	if hrp == nil then
+		return
+	end
+	f.dragging = true
+	f.dragPlayer = player
+	f.lastGood = CFrame.identity
+	f.fish:SetAttribute("DraggedBy", player.Name)
+	collisionOff(f)
+
+	-- Keep the held fish within GRAB.Range of its holder. Beyond that it stops where it was.
+	f.constraint = f.dd:AddConstraintFunction(1, function(proposed: CFrame): CFrame
+		local holder = hrpOf(player)
+		if holder == nil then
+			return f.lastGood
+		end
+		local world = f.dd:GetReferenceFrame() * proposed
+		if (world.Position - holder.Position).Magnitude > GRAB.Range then
+			return f.lastGood
+		end
+		f.lastGood = proposed
+		return proposed
+	end)
+end
+
+local function onDragEnd(f: any)
+	if not f.dragging then
+		return
+	end
+	f.dragging = false
+	f.dragPlayer = nil
+	if f.constraint then
+		f.constraint:Disconnect()
+		f.constraint = nil
+	end
+	if f.fish.Parent then
+		f.fish:SetAttribute("DraggedBy", nil)
+	end
+	collisionRestore(f)
+	-- Released in the air: back to physics. Released on the surface: the next frame
+	-- sees it on the water and anchors it again.
+	f.state = "air"
+	setAnchored(f.fish, false)
+end
+
+local function makeDragDetector(f: any): DragDetector
+	local dd = Instance.new("DragDetector")
+	dd.ResponseStyle = Enum.DragDetectorResponseStyle.Geometric
+	dd.DragStyle = DRAG_STYLE
+	dd.MaxActivationDistance = GRAB.Range
+	dd.Enabled = false -- off during the reel; on once the fish is released
+	dd.Parent = f.fish
+	dd.DragStart:Connect(function(player: Player)
+		onDragStart(f, player)
+	end)
+	dd.DragEnd:Connect(function()
+		onDragEnd(f)
+	end)
+	return dd
 end
 
 local function updateFloaters()
@@ -331,6 +395,11 @@ local function updateFloaters()
 		local root = f.primary
 		if fish.Parent == nil or root.Parent == nil then
 			table.remove(floaters, i)
+		elseif f.dragging then
+			-- Held by the DragDetector: no floating, no reel. Release if the holder has gone.
+			if f.dragPlayer == nil or f.dragPlayer.Parent == nil then
+				onDragEnd(f)
+			end
 		elseif f.state == "reel" then
 			-- Pull the fish along a smooth arc to the hold point. The hold point follows the
 			-- player, so this still works on a moving ship or high up.
@@ -347,12 +416,7 @@ local function updateFloaters()
 		else
 			local pos = root.Position
 			local sea = seaAt(Vector3.new(pos.X, 0, pos.Z))
-			if fish:GetAttribute("DraggedBy") ~= nil then
-				if f.state ~= "drag" then
-					f.state = "drag"
-					setAnchored(fish, false)
-				end
-			elseif f.state ~= "water" then
+			if f.state ~= "water" then
 				if pos.Y <= sea + FLOAT.EnterBand and root.AssemblyLinearVelocity.Y <= 0 then
 					-- Came down onto the water: stop here and ride the surface.
 					f.state = "water"
@@ -444,8 +508,10 @@ local function catchFish(player: Player, id: number)
 		t0 = os.clock(),
 		start = primary.Position,
 		yaw = yaw,
+		dragging = false,
 	}
 	table.insert(floaters, f)
+	f.dd = makeDragDetector(f)
 	collisionOff(f)
 
 	-- Splash and catch sound come from the fish itself.
@@ -593,111 +659,6 @@ local function onCast(player: Player, target: any)
 	end)
 end
 
--- Grab -----------------------------------------------------------------------
-local drags: { [Player]: any } = {}
-
-local function endDrag(player: Player)
-	local d = drags[player]
-	if d == nil then
-		return
-	end
-	drags[player] = nil
-	if d.fish and d.fish.Parent then
-		d.fish:SetAttribute("DraggedBy", nil)
-	end
-	local f = d.fish and findFloater(d.fish)
-	if f then
-		collisionRestore(f)
-	end
-	for _, o in ipairs(d.objects) do
-		if o and o.Parent then
-			o:Destroy()
-		end
-	end
-end
-
-local function startDrag(player: Player, fish: any)
-	if typeof(fish) ~= "Instance" or not fish:IsA("Model") then
-		return
-	end
-	endDrag(player)
-	if not fish:GetAttribute("Caught") or fish:GetAttribute("Reeling") or fish.Parent ~= caughtFolder or fish:GetAttribute("DraggedBy") then
-		return
-	end
-	local f = findFloater(fish)
-	if f == nil or f.state == "reel" then
-		return
-	end
-	local hrp = hrpOf(player)
-	local root = fish.PrimaryPart
-	if hrp == nil or root == nil or (root.Position - hrp.Position).Magnitude > GRAB.Range then
-		return
-	end
-
-	local _, yaw = root.CFrame:ToOrientation()
-	local mass = math.max(root.AssemblyMass, 1)
-
-	-- Built-in physics grab: an AlignPosition and AlignOrientation toward a goal part.
-	local goal = Instance.new("Part")
-	goal.Name = "FishDragGoal"
-	goal.Anchored = true
-	goal.CanCollide = false
-	goal.CanQuery = false
-	goal.CanTouch = false
-	goal.Transparency = 1
-	goal.Size = Vector3.new(0.5, 0.5, 0.5)
-	goal.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yaw, 0)
-	goal.Parent = caughtFolder
-
-	local a0 = Instance.new("Attachment")
-	a0.Name = "DragAttach"
-	a0.Parent = root
-	local a1 = Instance.new("Attachment")
-	a1.Name = "DragGoal"
-	a1.Parent = goal
-
-	local ap = Instance.new("AlignPosition")
-	ap.Attachment0 = a0
-	ap.Attachment1 = a1
-	ap.RigidityEnabled = false
-	ap.MaxForce = mass * workspace.Gravity * GRAB.ForceMultiplier
-	ap.MaxVelocity = 60
-	ap.Responsiveness = GRAB.Responsiveness
-	ap.Parent = root
-
-	local ao = Instance.new("AlignOrientation")
-	ao.Attachment0 = a0
-	ao.Attachment1 = a1
-	ao.MaxTorque = mass * workspace.Gravity * 2
-	ao.Responsiveness = 10
-	ao.Parent = root
-
-	-- Collision off while the player holds it. Restored on release (endDrag).
-	collisionOff(f)
-	fish:SetAttribute("DraggedBy", player.Name)
-	drags[player] = {
-		fish = fish,
-		goal = goal,
-		height = root.Position.Y,
-		yaw = yaw,
-		objects = { goal, a0, ap, ao },
-	}
-end
-
-local function moveDrag(player: Player, point: any)
-	local d = drags[player]
-	local hrp = hrpOf(player)
-	if d == nil or hrp == nil or typeof(point) ~= "Vector3" then
-		return
-	end
-	local flat = Vector3.new(point.X - hrp.Position.X, 0, point.Z - hrp.Position.Z)
-	if flat.Magnitude > GRAB.Range then
-		flat = flat.Unit * GRAB.Range
-	end
-	local goalPos = Vector3.new(hrp.Position.X + flat.X, d.height, hrp.Position.Z + flat.Z)
-	d.goal.CFrame = CFrame.new(goalPos) * CFrame.Angles(0, d.yaw, 0)
-end
-
 -- Wiring ---------------------------------------------------------------------
 action.OnServerEvent:Connect(function(player: Player, kind: any, arg: any)
 	if kind == "Cast" then
@@ -708,12 +669,6 @@ action.OnServerEvent:Connect(function(player: Player, kind: any, arg: any)
 			FishingSounds.Play(bobber, FishingSounds.HookClick, 1, 60)
 			catchFish(player, castId)
 		end
-	elseif kind == "DragStart" then
-		startDrag(player, arg)
-	elseif kind == "DragMove" then
-		moveDrag(player, arg)
-	elseif kind == "DragEnd" then
-		endDrag(player)
 	end
 end)
 
@@ -724,7 +679,11 @@ tool.Unequipped:Connect(function()
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	endDrag(player)
+	for _, f in ipairs(floaters) do
+		if f.dragPlayer == player then
+			onDragEnd(f)
+		end
+	end
 	if castPlayer == player then
 		resetRod()
 	end
@@ -754,12 +713,6 @@ RunService.Heartbeat:Connect(function(dt)
 		placeBobber(catchMouth.WorldPosition)
 	end
 
-	for player, d in pairs(drags) do
-		local hrp = hrpOf(player)
-		if not d.fish.Parent or not hrp or (d.fish.PrimaryPart.Position - hrp.Position).Magnitude > GRAB.Leash then
-			endDrag(player)
-		end
-	end
 end)
 
 -- Start in the rest pose.
