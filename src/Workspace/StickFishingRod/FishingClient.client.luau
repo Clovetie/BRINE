@@ -1,5 +1,6 @@
--- FishingClient: casting input, the FishingRodUI viewport, and dragging caught fish.
--- The viewport has its own client-side Camera; nothing here changes the world.
+-- FishingClient: casting input, the FishingRodUI viewport (floated in front of the camera
+-- by Workspace.FloatingGui), and grabbing caught fish. The viewport has its own
+-- client-side Camera; nothing here changes the world. Tuning lives in FishingConfig.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -10,19 +11,22 @@ local UserInputService = game:GetService("UserInputService")
 local tool = script.Parent
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+local Config = require(tool:WaitForChild("FishingConfig"))
 local FishPose = require(tool:WaitForChild("FishPose"))
+local FloatingGui = require(workspace:WaitForChild("FloatingGui"))
 local remotes = tool:WaitForChild("FishingRemotes")
 local fishEvent = remotes:WaitForChild("FishEvent")
 local action = remotes:WaitForChild("Action")
 
-local SEA_Y = 24.98
-local DRAG_SEND_INTERVAL = 0.05
-local HIDE_AFTER_CATCH = 2.5
-local HIDE_AFTER_CANCEL = 1.5
-local CONTACT_DISTANCE = 0.6
-local FACING = Vector3.new(-1, 0.15, -0.35).Unit
-
-local CAST_TIMEOUT = 15
+local SEA_Y = Config.Viewport.SeaY
+local FACING = Config.Viewport.Facing
+local CONTACT_DISTANCE = Config.Viewport.ContactDistance
+local WIGGLE_SPEED = Config.Viewport.WiggleSpeed
+local WIGGLE_YAW = Config.Viewport.WiggleYaw
+local HIDE_AFTER_CATCH = Config.Viewport.HideAfterCatch
+local HIDE_AFTER_CANCEL = Config.Viewport.HideAfterCancel
+local DRAG_SEND_INTERVAL = Config.Grab.SendInterval
+local CAST_TIMEOUT = Config.Cast.ClientTimeout
 
 local CANCEL_TEXT = {
 	NoWater = "Nothing in the water.",
@@ -36,12 +40,18 @@ local CANCEL_TEXT = {
 }
 
 -- UI -------------------------------------------------------------------------
+-- The ScreenGui is parented under PlayerGui first, then FloatingGui takes its children
+-- into a SurfaceGui that floats in front of the camera. Show and hide with Enable.
 local gui = tool:WaitForChild("FishingRodUI")
 gui.ResetOnSpawn = false
-gui.Enabled = false
 gui.Parent = playerGui
+local floating = FloatingGui.new(gui, Config.Gui)
+floating:Enable(false)
+tool.Destroying:Connect(function()
+	floating:Remove()
+end)
 
-local background = gui:WaitForChild("Background")
+local background = floating.SurfaceGui:WaitForChild("Background")
 local reactive = background:WaitForChild("FishingReactive")
 local viewport = background:WaitForChild("FishViewport")
 
@@ -60,9 +70,6 @@ viewport.CurrentCamera = camera
 local scene = Instance.new("Model")
 scene.Name = "FishScene"
 scene.Parent = viewport
-
-local WIGGLE_SPEED = 8       -- radians per second (about 1.3 swings a second)
-local WIGGLE_YAW = 30        -- degrees of swing either side, about the bite point
 
 local sceneActive = false
 local hookReady = false      -- true from contact until caught, lost, or hidden
@@ -83,6 +90,29 @@ approachAlpha.Changed:Connect(function(value)
 		fish:PivotTo(startPivot:Lerp(endPivot, value))
 	end
 end)
+
+-- Fish look helpers (also used for the caught fish) ------------------------------
+-- Particle emitters on the fish, on or off.
+local function setEmitters(model: Model, on: boolean)
+	for _, e in ipairs(model:GetDescendants()) do
+		if e:IsA("ParticleEmitter") then
+			e.Enabled = on
+		end
+	end
+end
+
+-- Dead fish: black eyes, smooth plastic. UsePartColor must be on for the colour to show.
+local function markDead(model: Model)
+	local eyes = model:FindFirstChild("Eyes", true)
+	if eyes and eyes:IsA("UnionOperation") then
+		eyes.UsePartColor = true
+		eyes.Color = Color3.new(0, 0, 0)
+		eyes.Material = Enum.Material.SmoothPlastic
+	elseif eyes and eyes:IsA("BasePart") then
+		eyes.Color = Color3.new(0, 0, 0)
+		eyes.Material = Enum.Material.SmoothPlastic
+	end
+end
 
 local function makePart(name: string, size: Vector3, cf: CFrame, color: Color3, material: Enum.Material, transparency: number): Part
 	local p = Instance.new("Part")
@@ -150,13 +180,13 @@ local function hideUi()
 	sceneActive = false
 	hookReady = false
 	wriggleOn = false
-	gui.Enabled = false
+	floating:Enable(false)
 	clearScene()
 end
 
 local function showUi(text: string)
 	hideToken += 1
-	gui.Enabled = true
+	floating:Enable(true)
 	buildScene()
 	reactive.Text = text
 end
@@ -212,6 +242,11 @@ local function onCaught(name: string)
 	end
 	hookReady = false
 	wriggleOn = false
+	-- The fish is caught: its emitter stops and its eyes go black.
+	if fish then
+		setEmitters(fish, false)
+		markDead(fish)
+	end
 	reactive.Text = name .. " Caught!"
 	local token = hideToken
 	task.delay(HIDE_AFTER_CATCH, function()
@@ -290,9 +325,8 @@ RunService.RenderStepped:Connect(function()
 		end
 	end
 
-	-- Wriggle: once the fish has bitten, it swings side to side until it is caught or lost.
-	-- The fish swings left and right around its bite point (BobberPos), so the mouth
-	-- stays on the bobber while the body and tail swing through the viewport.
+	-- Wriggle: once the fish has arrived it swings left and right about its bite point
+	-- (BobberPos), so the mouth stays on the bobber while the body swings in the viewport.
 	if fish and wriggleOn and endPivot and bobberClone then
 		local bp = bobberClone:FindFirstChild("BobberPoint") :: Attachment
 		if bp then
@@ -307,7 +341,7 @@ RunService.RenderStepped:Connect(function()
 	end
 end)
 
--- Input: cast and drag ----------------------------------------------------------
+-- Input: cast and grab -----------------------------------------------------------
 local function mouseRay(): Ray
 	local loc = UserInputService:GetMouseLocation()
 	return workspace.CurrentCamera:ViewportPointToRay(loc.X, loc.Y)
@@ -320,6 +354,7 @@ local function rayParams(): RaycastParams
 	return params
 end
 
+-- A caught fish under the cursor that can be grabbed (not while it is being reeled in).
 local function fishUnderCursor(): Model?
 	local ray = mouseRay()
 	local hit = workspace:Raycast(ray.Origin, ray.Direction * 500, rayParams())
@@ -327,7 +362,7 @@ local function fishUnderCursor(): Model?
 		return nil
 	end
 	local model = hit.Instance:FindFirstAncestorOfClass("Model")
-	if model and model:GetAttribute("Caught") and not model:GetAttribute("DraggedBy") then
+	if model and model:GetAttribute("Caught") and not model:GetAttribute("Reeling") and not model:GetAttribute("DraggedBy") then
 		return model
 	end
 	return nil
