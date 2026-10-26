@@ -1,0 +1,219 @@
+# 01 — Defects
+
+Found during the audit pass. **Nothing was fixed in this pass** unless noted.
+Severity: **P0** breaks play · **P1** visibly wrong · **P2** polish · **P3** debt.
+"Prompt" is the pass that should fix it.
+
+Each entry has evidence you can re-run, and — where I could — the direction the drift runs, because
+in this repo *repo newer than Studio* and *Studio newer than repo* both occur and they need opposite
+fixes.
+
+---
+
+## P1 — visibly wrong
+
+### D-01 · `WoodenShip` runs a stale client script
+- **Object:** `Workspace.WoodenShip.Client` (Studio) vs `src/Workspace/singletons/Ship/Client.client.luau` (repo).
+- **Evidence:** read-back diff, **repo 269 lines / Studio 243 lines, 45 diff lines**. The Studio copy
+  is missing the `seaSurfaceAt(zone, now)` helper (the 4-corner mean the repo's `WaveFloat.Solve`
+  uses as the surface) and everything downstream of it. `Workspace.Boathouse.Client` and
+  `Workspace.MisoSoup.Client` are **exact** copies of the repo file (269/269, 0 diff), so
+  `WoodenShip` is the only ship on the old client.
+- **Why it matters:** this is the mechanical cause of the brief's "`WoodenShip`'s minimum sink is
+  poor" — the three ships do not run the same buoyancy client. It is also the only parity break in
+  the ship tree.
+- **Direction:** repo → Studio (repo is newer).
+- **Fix in:** prompt **07**.
+
+### D-02 · `IslandConfig` is older in Studio than in the repo
+- **Object:** `ReplicatedStorage.IslandGeneration.IslandConfig`.
+- **Evidence:** `repo 256 / studio 251 lines, 23 diff lines`. Studio lacks `MaxCachedRecords = 3000`
+  and carries the pre-4.1 wording of the `MaxIslandRadius` comment.
+- **Why it matters:** mostly none — `IslandGenerator.luau:826` reads
+  `streamingConfig.MaxCachedRecords or 3000`, and the value is identical, so behaviour matches. Kept
+  as P1 only because it is drift in a live-tuned file: the next person to change the cap in Studio
+  will silently have no effect.
+- **Direction:** repo → Studio.
+- **Fix in:** prompt **08**.
+
+### D-03 · The repo would ship **silent** island rise/sink audio
+- **Object:** `src/ReplicatedStorage/IslandGeneration/IslandConfig.luau` vs the Studio module.
+- **Evidence:** repo `SoundId = "rbxassetid://0"`, `SoundVolume = 0.8` for **both** the rise and the
+  sink SFX (`…/IslandConfig.luau`, placeholder comment "Replace the zero with your uploaded sound
+  id"). Studio has `SoundId = "rbxassetid://9119681553"`, `SoundVolume = 2.5` (rise) and
+  `"rbxassetid://1056170474"`, `1.15` (sink).
+- **Why it matters:** a build from source loses the island arrival/departure audio entirely and
+  fires `rbxassetid://0` load failures.
+- **Direction:** **Studio → repo** (Studio holds live tuning; the repo holds a placeholder).
+- **Fix in:** prompt **05** (sound) with prompt **08**.
+
+### D-04 · Two `Splash` sounds loop forever at volume 0 on an unapproved asset
+- **Object:** `Workspace.WoodenShip.Prim.Splash`, `Workspace.Boathouse.Prim.Splash`.
+- **Evidence:** `SoundId = rbxassetid://167123203`, `Volume = 0`, `Looped = true`,
+  `IsPlaying = true` on both. Console: **30 ×** `ContentId: rbxassetid://167123203 failed due to:
+  Asset is not approved for the requester` in one edit session.
+- **Why it matters:** a permanently playing, permanently inaudible, permanently failing sound. It
+  costs an asset retry every ~13 s and floods the console, which hides real warnings during
+  playtests. P2 on looks, P1 on tooling (it is why §5 of the inventory is noisy).
+- **Direction:** both — stop the loop and drop the volume-0 object from Studio; fix the ID or remove
+  the object in the repo.
+- **Fix in:** prompt **07** (ship audio) with prompt **05**.
+
+### D-05 · Unattributed asset `203785492`
+- **Object:** unknown — **not** any instance property and **not** any of the 81 scripts.
+- **Evidence:** 15 × `ContentId: rbxassetid://203785492 failed due to: Asset type does not match
+  requested type`; `script_grep` for `203785492` over all scripts → 0 matches; property sweep over
+  `SoundId`/`Texture`/`TextureID`/`MeshId`/`Image`/`ColorMap`/`Meta`/`NormalMap`/`RoughnessMap`/
+  `EmissiveMap`/sky faces/`CursorIcon` → 0 hits.
+- **Why it matters:** unowned console noise; also possibly one of *our* older sound IDs requested as
+  the wrong asset type. Cannot be closed until it is attributed.
+- **Fix in:** prompt **09** (re-check in Play, where the requester is identified). Blocked: needs one
+  more sweep from a live client.
+
+---
+
+## P2 — polish
+
+### D-06 · Duplicate `Gerstner` module inside itself
+- **Object:** `ReplicatedStorage.Gerstner.init` (ModuleScript, 341 lines, 11950 bytes).
+- **Evidence:** `ReplicatedStorage.Gerstner` (ModuleScript) has 7 children — `Appearance`,
+  `HeightLookup`, `Helper`, `Settings`, `Serial`, `Types`, **`init`**. Parent and child have the
+  **same source hash `13697039`**. The child matches `src/ReplicatedStorage/Gerstner/init.luau`
+  exactly; nothing `require`s `Gerstner.init` (40 `require` sites checked).
+- **Why it matters:** ~12 KB of dead replicated source, and a trap: `require(Gerstner.init)` returns
+  a *second* module instance with its own state, which would silently desync waves from the real one.
+- **Fix in:** prompt **09** (delete the child; read back after).
+
+### D-07 · `FloatingObjectGenerationServer` hardcodes the report interval in Studio
+- **Object:** `ServerScriptService.FloatingObjectGenerationServer`.
+- **Evidence:** Studio reads `local minInterval =  0.1` (with a stray double space) and declares an
+  unused `local Config = ReplicatedStorage.FloatingObjectGeneration.FloatingObjectConfig`; repo reads
+  `Config.Streaming.CameraMinReportInterval or 0.1`. repo 72 / Studio 73 lines.
+- **Why it matters:** the Studio copy ignores a config knob that the repo exposes, so changing
+  `CameraMinReportInterval` would do nothing in Studio.
+- **Direction:** repo → Studio.
+- **Fix in:** prompt **09**.
+
+### D-08 · Fishing rod UI tuning differs between repo and Studio
+- **Object:** `StarterPack.StickFishingRod.FishingConfig` → `Config.Gui`.
+- **Evidence:** repo `{Distance = 0.2, Speed = 0.9, Angle = 0}`; Studio
+  `{Distance = 0, Speed = 0.35, Angle = 35}`. Both files are 77 lines; only the `Gui` block differs.
+- **Why it matters:** `FishingClient.client.luau:48` feeds this straight into
+  `FloatingGui.new(gui, Config.Gui)`, so the rod UI sits somewhere different depending on which copy
+  runs. The user accepted fishing as "Normal" on the **Studio** values.
+- **Direction:** **Studio → repo**, pending the user's word (this one is a taste call, not a bug).
+- **Fix in:** prompt **06**.
+
+### D-09 · A debug harness runs a PRECISE wave lookup every frame
+- **Object:** `Workspace.SingleHeightLookup.LookupTesting` (`Workspace.SingleHeightLookup`, Script, 15 lines).
+- **Evidence:** connects `RunService.Stepped` and calls
+  `HeightLookup.Lookup(Part.Position, 'PRECISE', …)` every frame, then writes `Part.Position`; a
+  second `while true` loop re-reads the zone every 2 s. Never despawns.
+- **Why it matters:** a permanent per-frame `PRECISE` lookup (triangle-exact, ~200 reads per lookup
+  per ROADMAP 1.2) plus a replicated position write, on the server, for a debug part. Cheap per
+  frame but pointless, and it pollutes any ocean performance measurement done in Play.
+- **Fix in:** prompt **09** (delete from Studio; it is not in the repo).
+
+### D-10 · Zone scripts exist twice
+- **Object:** `Workspace.RoughSeaArea.RoughSea` + `ServerStorage.OceanEvents.SeaStuff.RoughSeaArea.RoughSea`
+  (19 lines, same source `43676cc2`); `Workspace.Whirlpool.Whirlpool` +
+  `ServerStorage.OceanEvents.SeaStuff.Whirlpool.Whirlpool` (41 lines, same source `9bf3cd18`).
+- **Evidence:** survey hashes are identical within each pair.
+- **Why it matters:** two live copies of the same zone driver. If they both fire, the zone is applied
+  twice; if only one is meant to run, the other is dead. Needs a decision, not a deletion, because
+  the `OceanEvents` copy may be the spawn template.
+- **Fix in:** prompt **04** (zones/seam) — record which one is authoritative first.
+
+### D-11 · Third-party trees live only in Studio
+- **Object:** `ReplicatedStorage.UsefulFunctions.Module` (835 lines + 12 UI sub-scripts),
+  `Workspace.MODULE.VoxBreaker` (1407) + `PartCache` (192) + `PartCache.Table` (107).
+- **Evidence:** not referenced anywhere in `default.project.json`; absent from `src/`.
+- **Why it matters:** `validate-project.js` legitimately reports the tree as consistent, but a Rojo
+  build would produce a place missing these. Any future "rebuild from repo" loses them silently.
+- **Fix in:** prompt **09** — decision needed: vendor them under `src/`, or document them as
+  must-not-be-rebuilt.
+
+### D-12 · Three ships are built differently
+- **Object:** `Workspace.WoodenShip`, `Workspace.Boathouse`, `Workspace.MisoSoup`.
+- **Evidence:** only `Boathouse` has an engine `Sound` (`Motor.Engine`, `8916893206`, vol 2); only
+  `Boathouse` and `WoodenShip` have a `Splash`; `MisoSoup` has neither. Attributes:
+  `MisoSoup Draft -7.3 / SinkRestOffset 2.4`, `WoodenShip Draft 5.5 / SinkRestOffset -2`,
+  `Boathouse Draft 3.5` (no `SinkRestOffset`). Part counts: MisoSoup 75, WoodenShip 11, Boathouse 29.
+- **Why it matters:** "Boathouse bounces at draft 3.5" (brief) is a tuning bug on a ship whose
+  siblings carry a `SinkRestOffset` it lacks. The uneven audio means a fix cannot be copy-pasted
+  across all three.
+- **Fix in:** prompt **07**.
+
+### D-13 · `MisoSoup` draft is negative
+- **Object:** `Workspace.MisoSoup`, attribute `Draft = -7.3`.
+- **Evidence:** above; its siblings are `+5.5` and `+3.5`.
+- **Why it matters:** either a deliberate flag (this is the rarest ship) or a sign error. Sign errors
+  in draft are exactly the class of bug the "waves colliding" report describes.
+- **Fix in:** prompt **07** — confirm intent with the user before changing.
+
+---
+
+## P3 — debt
+
+### D-14 · Runtime-created fishing remotes
+- **Object:** `src/Workspace/StickFishingRod/FishingServer.server.luau:55,58`.
+- **Evidence:** `local fishEvent = remotes:FindFirstChild("FishEvent") or Instance.new("RemoteEvent")`.
+- **Why it matters:** the client `WaitForChild`s a remote that only exists once the server script has
+  run. Works in practice; a standing order-dependency.
+- **Fix in:** prompt **06**.
+
+### D-15 · `find-dead-config` sees 0 keys in `Gerstner/Settings`
+- **Object:** `tools/find-dead-config.js` vs `src/ReplicatedStorage/Gerstner/Settings/init.luau`.
+- **Evidence:** tool prints "Settings — 0 config keys — no dead keys" while the file defines
+  `PERF`, `GRID_SETTINGS`, `DEBUG`, `MeshDetailDistance`, `LowRenderDistance`,
+  `MaxChunkRenderDistance`. The module ends with `GerstnerWave:SET_SETTINGS(…)` and starts with
+  `require(script.Parent)`, so it is not a plain table the scanner recognises.
+- **Why it matters:** "no dead keys" is a **false pass** for the one file whose dead keys matter most
+  (the ocean knobs). Do not cite this check as coverage for `Settings`.
+- **Fix in:** prompt **09** (tooling), document-only until then.
+
+### D-16 · `check-syntax.js` false-fails without `.tools/`
+- **Object:** `tools/check-syntax.js` fallback path.
+- **Evidence:** with `.tools/bin/luau-compile` absent, 3 files fail: `SwimClient` `[324:17]`,
+  `AmbientSea` `[135:16]`, `ParallelWorker` `[76:14]`. All three compile clean under
+  `luau-compile` 0.736. Causes: Luau `if-then` expressions and a nested table type
+  `{ [Vector3]: { number } }`.
+- **Why it matters:** a clean checkout reports "3 file(s) failed" and contradicts the documented
+  baseline of 23 — which invites someone to "fix" valid Luau.
+- **Fix in:** prompt **09** — make the fallback skip (not fail) on Luau-only syntax, or fail loudly
+  with "install `.tools/`".
+
+---
+
+## P0 — to be established by prompt 02
+
+The brief's two live complaints — **visual spasms in rough/transitional seas** and **"waves
+colliding"** — are not yet defects I can name with evidence. The audit only establishes the ground
+truth they must be measured against:
+
+- `FAR_WRITE_EVERY = 3` and `UV_WRITE_EVERY = 3` are live (`Settings/init.luau:164,165`, consumed
+  at `ParallelWorker.client.luau:104,105`), so far vertices are written every 3rd frame while near
+  vertices are written every frame — the S1 suspect in prompt 02 is **present and armed**, not
+  hypothetical.
+- The mesh draws `rest + D(rest)` while physics reads `PLANE_Y + D(point).Y` at the rest point
+  (`WaveFloat.HeightAt`); there is no inverse mapping, so S2 (rest-vs-displaced) is **structural**,
+  not a regression.
+- `Workspace.Ocean` is empty in edit mode, so both must be measured in Play.
+
+**Nothing here is called a defect until prompt 02 measures it.** And per the brief, I need the
+user's clip or screenshot before concluding what "colliding" means.
+
+---
+
+## Summary
+
+| Severity | Count | IDs |
+|---|---|---|
+| P0 | 0 established (2 suspects armed) | — |
+| P1 | 5 | D-01, D-02, D-03, D-04, D-05 |
+| P2 | 8 | D-06 … D-13 |
+| P3 | 3 | D-14, D-15, D-16 |
+| **Total** | **16** | |
+
+Highest-value fix by consequence: **D-01** — it is the only mechanical explanation on record for one
+of the named ship bugs, and it is a single file push in the repo → Studio direction.
