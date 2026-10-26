@@ -49,11 +49,8 @@ local DRAG_RANGE = 22        -- how far a dragged fish may be from the player
 local DRAG_LEASH = 40        -- auto-release beyond this distance
 local FALLBACK_SEA = 24.98
 local SLACK = 2              -- extra rope length beyond the bobber distance
-local FLOAT_K = 6            -- caught fish: spring stiffness toward the water line
-local FLOAT_D = 5            -- caught fish: damping (about critical for K = 6)
 local FLOAT_DEPTH = 0.5      -- caught fish: centre rides this far below the surface
-local FLOAT_DRAG = 1.2       -- caught fish: horizontal drag while in the water (1/s)
-local FLOAT_REACH = 3        -- buoyancy applies at or below sea level + this margin
+local ENTER_BAND = 1.0       -- a falling caught fish lands on the water within this height
 
 -- Remotes --------------------------------------------------------------------
 local remotes = tool:FindFirstChild("FishingRemotes")
@@ -223,33 +220,56 @@ local function resetRod(reason: string?)
 	castPlayer = nil
 end
 
--- Caught fish: buoyancy ------------------------------------------------------------
--- While a caught fish is at or below the surface, a VectorForce spring holds its
--- centre near the water line, horizontal water drag slows it, and an AlignOrientation
--- keeps it upright (yaw only) unless a player is dragging it. In the air it falls normally.
+-- Caught fish: floating -------------------------------------------------------------
+-- A thrown fish falls under normal physics. Once it comes down onto the water it is
+-- anchored and rides the sea surface exactly (centre FLOAT_DEPTH below the surface,
+-- yaw only, no tilt), the same way the bobber does. A player drag switches it back to
+-- physics for the drag; when the drag ends it rides again, or falls if it is in the air.
 local floaters = {}
 
+local function setAnchored(fish: Model, on: boolean)
+	for _, p in ipairs(fish:GetDescendants()) do
+		if p:IsA("BasePart") then
+			p.Anchored = on
+		end
+	end
+end
+
 local function updateFloaters()
-	local g = workspace.Gravity
 	for i = #floaters, 1, -1 do
 		local f = floaters[i]
+		local fish = f.fish
 		local root = f.primary
-		if f.fish.Parent == nil or root.Parent == nil then
+		if fish.Parent == nil or root.Parent == nil then
 			table.remove(floaters, i)
 		else
 			local pos = root.Position
-			local sea = seaAt(pos)
-			if pos.Y < sea + FLOAT_REACH then
-				local mass = root.AssemblyMass
-				local vel = root.AssemblyLinearVelocity
-				local acc = FLOAT_K * (sea - FLOAT_DEPTH - pos.Y) - FLOAT_D * vel.Y
-				f.buoy.Force = Vector3.new(-FLOAT_DRAG * mass * vel.X, mass * (g + acc), -FLOAT_DRAG * mass * vel.Z)
-				local _, yaw = root.CFrame:ToOrientation()
-				f.upright.CFrame = CFrame.Angles(0, yaw, 0)
-				f.upright.Enabled = f.fish:GetAttribute("DraggedBy") == nil
-			else
-				f.buoy.Force = Vector3.zero
-				f.upright.Enabled = false
+			local sea = seaAt(Vector3.new(pos.X, 0, pos.Z))
+			if fish:GetAttribute("DraggedBy") ~= nil then
+				if f.state ~= "drag" then
+					f.state = "drag"
+					setAnchored(fish, false)
+				end
+			elseif f.state ~= "water" then
+				if pos.Y <= sea + ENTER_BAND and root.AssemblyLinearVelocity.Y <= 0 then
+					-- Came down onto the water: stop here and ride the surface.
+					f.state = "water"
+					f.x = pos.X
+					f.z = pos.Z
+					local _, yaw = root.CFrame:ToOrientation()
+					f.yaw = yaw
+					root.AssemblyLinearVelocity = Vector3.zero
+					root.AssemblyAngularVelocity = Vector3.zero
+					setAnchored(fish, true)
+				else
+					f.state = "air"
+				end
+			end
+
+			if f.state == "water" then
+				local surface = seaAt(Vector3.new(f.x, 0, f.z))
+				local desired = CFrame.new(f.x, surface - FLOAT_DEPTH, f.z) * CFrame.Angles(0, f.yaw, 0)
+				fish:PivotTo(desired * root.CFrame:Inverse() * fish:GetPivot())
 			end
 		end
 	end
@@ -306,22 +326,8 @@ local function catchFish(player: Player, id: number)
 		end
 	end
 
-	local buoyAt = Instance.new("Attachment")
-	buoyAt.Name = "BuoyAttach"
-	buoyAt.Parent = primary
-	local buoy = Instance.new("VectorForce")
-	buoy.Attachment0 = buoyAt
-	buoy.RelativeTo = Enum.ActuatorRelativeTo.World
-	buoy.ApplyAtCenterOfMass = true
-	buoy.Force = Vector3.zero
-	buoy.Parent = primary
-	local upright = Instance.new("AlignOrientation")
-	upright.Attachment0 = buoyAt
-	upright.Responsiveness = 8
-	upright.MaxTorque = math.max(primary.AssemblyMass, 1) * workspace.Gravity * 0.5
-	upright.Enabled = false
-	upright.Parent = primary
-	table.insert(floaters, { fish = fish, primary = primary, buoy = buoy, upright = upright })
+	-- Thrown: physics until it comes down onto the water (see updateFloaters).
+	table.insert(floaters, { fish = fish, primary = primary, state = "air" })
 
 	-- A caught fish is dead: eyes go black and smooth plastic.
 	fish:SetAttribute("Caught", true)
