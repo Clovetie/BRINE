@@ -133,6 +133,22 @@ function Gerstner.new(Direction: Vector3, WaveLength: number, Steepness: number,
 	}
 end
 
+-- Sea state: a slow field of calm and rough patches that drifts over time. It scales every
+-- wave's amplitude at a point, so the ocean mesh, HeightLookup and WaveFloat all read the
+-- same sea. Calm patches sit at SEA_STATE_CALM of the set amplitude; rough patches at 1.
+-- The field is three sines, so the patches are a few hundred studs across and change over
+-- roughly ten minutes.
+Gerstner.SEA_STATE_CALM = 0.3
+
+function Gerstner.SeaStateAt(Position: Vector3, t: number): number
+	local x, z = Position.X, Position.Z
+	local field = sin(x / 330 + t / 95) + sin(z / 270 - t / 140 + 1.3) + sin((x + z) / 510 + t / 210 + 2.1)
+	-- The field runs about -3..3 and is mostly near 0. Map its middle band to 0..1.
+	local s = clamp((field + 0.8) / 1.6, 0, 1)
+	s = s * s * (3 - 2 * s)
+	return Gerstner.SEA_STATE_CALM + (1 - Gerstner.SEA_STATE_CALM) * s
+end
+
 --[[
 	Computes all active waves for a specific Vector3 point and returns the new point.
 	<strong>Waves:</strong> All the active waves given as a table.
@@ -147,7 +163,7 @@ function Gerstner.ComputeTransform( Waves: { WaveInfo }, Position: Vector3, t: n
 	local Transform = v3zero
 	local phaseMulti = phaseMulti:: number or 1
 	local speedMulti = speedMulti:: number or 1
-	local amplitudeMulti = amplitudeMulti:: number or 1
+	local amplitudeMulti = (amplitudeMulti:: number or 1) * Gerstner.SeaStateAt(Position, t)
 
 	for i, Wave: WaveInfo in Waves do
 		local waveNumber, waveSpeed, waveAmplitude = Wave.WaveNumber * phaseMulti, Wave.WaveSpeed * speedMulti, Wave.WaveAmplitude * amplitudeMulti
@@ -179,7 +195,7 @@ function Gerstner.ComputeTransformAndNormal( Waves: { WaveInfo }, Position: Vect
 
 	local phaseMulti = phaseMulti:: number or 1
 	local speedMulti = speedMulti:: number or 1
-	local amplitudeMulti = amplitudeMulti:: number or 1
+	local amplitudeMulti = (amplitudeMulti:: number or 1) * Gerstner.SeaStateAt(Position, t)
 
 	for i, Wave: WaveInfo in Waves do
 		local waveNumber, waveSpeed, waveAmplitude = Wave.WaveNumber * phaseMulti, Wave.WaveSpeed * speedMulti, Wave.WaveAmplitude * amplitudeMulti
@@ -306,7 +322,7 @@ function Gerstner:GetApproximateHeight(Waves: { WaveInfo }, Position: Vector3, t
 	local TransformY = 0
 	local phaseMulti = phaseMulti:: number or 1
 	local speedMulti = speedMulti:: number or 1
-	local amplitudeMulti = amplitudeMulti:: number or 1
+	local amplitudeMulti = (amplitudeMulti:: number or 1) * Gerstner.SeaStateAt(Position, t)
 
 	for _, Wave: WaveInfo in Waves do
 		local waveNumber, waveSpeed, waveAmplitude = Wave.WaveNumber * phaseMulti, Wave.WaveSpeed * speedMulti, Wave.WaveAmplitude * amplitudeMulti

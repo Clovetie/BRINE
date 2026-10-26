@@ -115,6 +115,9 @@ local Settings = {
 	WORKER_COUNT = 6,
 	FrustumRenderDistance = 900,
 	LowRenderDistance = 200,
+	-- // Mesh detail: vertices further than this from the mesh centre use the lerped (LOD) path.
+	-- // Lerp error at this range is well under a stud for the sea's wave periods (about 4 to 6 s).
+	MeshDetailDistance = 120,
 	MaxChunkRenderDistance = 800,
 
 	Subdivisions = {
@@ -123,11 +126,15 @@ local Settings = {
 	},
 
 	--Waves = BrownianMotionWaves(6);
+	-- // Four waves from different headings, so the sea is not one rolling set. Wavelengths stay
+	-- // at 25 studs or more (the mesh grid is 48 studs). Steepness sums to 0.69; the old set summed
+	-- // to 1.35, past the point where Gerstner waves loop. Gerstner.SeaStateAt scales these into
+	-- // calm and rough patches.
 	Waves = {
-		-- // Start with base amplitude and wavelength, each wave iteration increases wavelength and decreases amplitude
-		GerstnerWave.new(Vector3.new(0.6, 0, 0.05), 24, 0.6),
-		GerstnerWave.new(Vector3.new(0.2, 0, 0.4), 28, 0.4),
-		GerstnerWave.new(Vector3.new(0.15, 0, 0.1), 35, 0.35),
+		GerstnerWave.new(Vector3.new(0.92, 0, 0.38).Unit, 58, 0.26),
+		GerstnerWave.new(Vector3.new(-0.35, 0, 0.94).Unit, 41, 0.20),
+		GerstnerWave.new(Vector3.new(0.71, 0, -0.71).Unit, 30, 0.14),
+		GerstnerWave.new(Vector3.new(-0.96, 0, -0.27).Unit, 25, 0.09),
 	},
 
 	ISLAND_SPEED_MULTIPLIER = 1.1,
@@ -148,6 +155,16 @@ local Settings = {
 
 	WHITECAP_HEIGHT = 6,
 	SHORE_TRANSPARENCY = 0.2,
+
+	-- // Render write budget. Every visible vertex is still computed each frame on the workers,
+	-- // but only a share of them is written to the EditableMesh, which runs serially on the main
+	-- // thread. Writes are staggered by vertex id so the cost is spread over frames. 1 = write
+	-- // every frame (the original behaviour, used for A/B tests).
+	PERF = {
+		FAR_WRITE_EVERY = 3, -- // far (low-detail) vertices: position and colour written every N frames
+		UV_WRITE_EVERY = 3, -- // UV scroll written every N frames (the scroll is slow)
+		REPORT_EVERY = 0, -- // dev only: warn a write-time summary every N frames per worker (0 = off)
+	},
 
 	-- // DEBUG
 	-- // Known issues thread: https://devforum.roblox.com/t/client-beta-in-experience-mesh-image-apis-now-available-in-published-experiences/3267293

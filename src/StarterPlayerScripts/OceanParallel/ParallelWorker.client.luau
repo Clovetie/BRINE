@@ -96,7 +96,16 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 	local Computations: Types.Computations = table.create(VertexCount + 1):: Types.Computations
 	
 	local PlaneSize = Plane.Size
+	-- // Write budget (Settings.PERF). Vertices are written on a staggered schedule: vertex id plus frame
+	-- // number modulo N, so each frame writes about 1/N of the far vertices.
+	local Frame = 0
+	local REPORT_EVERY = _settings.PERF.REPORT_EVERY or 0
+	local SerialMs, WriteCount, SerialFrames, ParallelMs = 0, 0, 0, 0
+	local FAR_EVERY = math.max(1, math.floor(_settings.PERF.FAR_WRITE_EVERY))
+	local UV_EVERY = math.max(1, math.floor(_settings.PERF.UV_WRITE_EVERY))
 	RS.Heartbeat:ConnectParallel(function(dt: number)
+		Frame += 1
+		local pStart = if REPORT_EVERY > 0 then tick() else 0
 		-- // We store a bunch of variables early on that we'll be repetitively using below,
 		-- // this is due to a micro-optimization with __index calls 
 		-- // saving slight-moderate performance (depends on the case).
@@ -253,6 +262,7 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 						end
 
 						local VertexColor = LOWER_QUALITY == true and _settings.WAVE_COLORS.TROUGH or Helper.GetVertexColor(Transform.Y, 0, ShoreTransparency)
+						if (Frame + VertexId) % FAR_EVERY == 0 then
 						Computations[VertexId] = {
 							CurrentLerpPosition * Dampening,
 
@@ -264,6 +274,7 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 
 							UpdateSecondary == true and ShoreTransparency or nil,
 						}
+						end
 						Info.AlphaTransparency = ShoreTransparency
 						Info.CurrentColor = VertexColor
 					end
@@ -314,7 +325,7 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 					ColorId,
 					Helper.GetVertexColor(Transform.Y, VortexOffsetY, ShoreTransparency),
 
-					UVId,
+					(Frame + VertexId) % UV_EVERY == 0 and UVId or nil,
 					UpdatedUV,
 
 					UpdateSecondary == true and ShoreTransparency or nil,
@@ -333,8 +344,12 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 		-- // then manually update each vertex and color data
 
 		-- // TODO: Switch to bulk :SetPosition() updates once ROBLOX releases it
+		if REPORT_EVERY > 0 then
+			ParallelMs += (tick() - pStart) * 1000
+		end
 		if Active == true then
 			task.synchronize()
+			local serialStart = if REPORT_EVERY > 0 then tick() else 0
 			debug.profilebegin('Serial Update')
 			
 			-- // We have to be sparse with what we update here, as updating too many things at once can lead to very high ms
@@ -342,7 +357,7 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 
 			for VertexId, Result in Computations do
 				local ColorId = Result[2]:: number?
-				local UVId = Result[4]:: number
+				local UVId = Result[4]:: number?
 				
 				if ColorId ~= nil then
 					local Alpha = Result[6]:: number?
@@ -353,9 +368,24 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 					end
 				end
 				EditableMesh:SetPosition(VertexId, Result[1]:: Vector3)
-				EditableMesh:SetUV(UVId, Result[5]:: Vector2)
+				if UVId ~= nil then
+					EditableMesh:SetUV(UVId, Result[5]:: Vector2)
+				end
 			end
 
+			if REPORT_EVERY > 0 then
+				-- // Dev instrument (Settings.PERF.REPORT_EVERY): main-thread write time and count per frame.
+				SerialMs += (tick() - serialStart) * 1000
+				for _ in Computations do
+					WriteCount += 1
+				end
+				SerialFrames += 1
+				if SerialFrames >= REPORT_EVERY then
+					warn(string.format('OCEANPERF worker=%s serialMsPerFrame=%.3f writesPerFrame=%.0f frames=%d', tostring(Actor.Name), SerialMs / SerialFrames, WriteCount / SerialFrames, SerialFrames))
+					warn(string.format('OCEANPERF2 parallelMsPerFrame=%.3f', ParallelMs / SerialFrames))
+					SerialMs, WriteCount, SerialFrames, ParallelMs = 0, 0, 0, 0
+				end
+			end
 			table.clear(Computations)
 			debug.profileend()
 		end

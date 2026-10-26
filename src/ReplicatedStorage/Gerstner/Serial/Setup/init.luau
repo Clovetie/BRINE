@@ -151,7 +151,7 @@ local function InsertToVertexInfo(EM: EditableMesh, Id: number)
 
 	local QUALITY_LEVEL = 1
 	local Distance = (Position - EM:GetCenter()).Magnitude
-	if Distance > _settings.LowRenderDistance then
+	if Distance > _settings.MeshDetailDistance then
 		QUALITY_LEVEL = 2
 	end
 
@@ -229,7 +229,7 @@ function Setup.SetupEditableMesh(): EditableMesh
 
 			VertexInfo[VertexId] = Setup.GetBlankVertexKey(VertexId, vertexX, vertexZ)
 			local Distance = (VertexPosition - Vector3.zero).Magnitude
-			if Distance > _settings.LowRenderDistance then
+			if Distance > _settings.MeshDetailDistance then
 				VertexInfo[VertexId].QUALITY_LEVEL = 2
 			end
 

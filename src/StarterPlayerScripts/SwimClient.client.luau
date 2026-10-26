@@ -23,6 +23,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
 
 local WaveFloat = require(ReplicatedStorage.FloatingObjectGeneration.WaveFloat)
 local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
@@ -63,6 +64,14 @@ overlay.Parent = overlayGui
 task.spawn(function()
 	overlayGui.Parent = localPlayer:WaitForChild("PlayerGui")
 end)
+
+-- Murk settings: how deep the water closes in, and the view distance and colour at full depth.
+local MURK_DEPTH = 3
+local MURK_FOG_END = 120
+local MURK_FOG_COLOR = Color3.fromRGB(18, 80, 96)
+local fogEndDefault = Lighting.FogEnd
+local fogColorDefault = Lighting.FogColor
+local lastMurk = 0
 
 -- Zone state -----------------------------------------------------------------------
 
@@ -294,4 +303,18 @@ RunService.PreSimulation:Connect(function(dt)
 	tint.Brightness = -0.08 * alpha
 	tint.Saturation = -0.15 * alpha
 	overlay.BackgroundTransparency = 1 - 0.35 * alpha
+
+	-- Murk: the classic fog closes in over the first MURK_DEPTH studs below the surface,
+	-- and the sound takes on underwater reverb. Both are local to this client.
+	local murk = math.clamp(camDepth / MURK_DEPTH, 0, 1)
+	if murk ~= lastMurk then
+		lastMurk = murk
+		local closing = (1 - murk) ^ 3
+		Lighting.FogEnd = MURK_FOG_END + (fogEndDefault - MURK_FOG_END) * closing
+		Lighting.FogColor = fogColorDefault:Lerp(MURK_FOG_COLOR, murk)
+		local reverb = if murk > 0.5 then Enum.ReverbType.UnderWater else Enum.ReverbType.NoReverb
+		if SoundService.AmbientReverb ~= reverb then
+			SoundService.AmbientReverb = reverb
+		end
+	end
 end)
