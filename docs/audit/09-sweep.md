@@ -162,3 +162,8 @@ parity_hash.py             → 39/39 repo↔Studio pairs match, 0 differ, 0 miss
 5. **Turn away from a prop and back** — it may be culled while unseen, and must not vanish while you are
    looking at it.
 6. **Listen to the sea** — calm/rough/day/night are wired and measured, but nobody has judged the mix.
+7. **Look at the props on the horizon** — they used to hang in the air (all 23 had a vertical span of
+  0.00); they now ride the swell. Distant ones still do not *tilt* (frozen LOD beyond `SimDistance`).
+8. **Catch a few fish and look at the water around the boat** — caught fish are kept so you can pick
+   them up, but retention is now capped at 24, so old ones clear once you have moved on. Nothing
+   clears within 250 studs of you, or anything you are holding.

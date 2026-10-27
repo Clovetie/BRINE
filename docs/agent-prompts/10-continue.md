@@ -79,6 +79,12 @@ Branch `arena/ocean-sound-and-audit`, PR #9 into `main`. `main` is at `525a9ec` 
 | `fb37fdf` | Ships: stop the bouncing — hull-bottom gate + PD force (unmanned path) |
 | `fadbe84`, `c86d9e8` | Docs: BOAT_HANDLER rewrite, ROADMAP verified-state section |
 | `0079ab0` | **Ships: the bounce the driver sees — submergence ramp, occupant contact, KD 32** |
+| `264b9f2` | Ships: verify the bounce fix in the rough-sea zone, after a 40-stud drop, and that anti-climb still sees real geometry |
+| `f5739f2` | Tooling: `find-dead-config` can read a config built in a local (closes D-15) |
+| `5ee1731` | Fishing: cast cycle observed; caught fish were never removed (D-24); Rojo never placed the rod or FloatingGui (D-25) |
+| `f69eea4` | Floating objects: the frozen band was hanging in the air (D-26) |
+| `d41ca27` | Ships: damp against the water, so a moving hull rides the swell |
+| `4e41738` | Floating objects: correct a frozen prop's pose once, at capture |
 
 **Nothing after `a4ef9a0` is pushed** (still no GitHub token or `origin` in the new sandbox): this session had no GitHub token and no `origin`
 (`git remote -v` is empty), so `bcfba3c` and `a1b2685` are local commits on the branch.
@@ -221,6 +227,31 @@ measurement harness was lying. Both traps are worth remembering:
   frames; `touchingOutside()` counting the welded player as world geometry (so anti-climb
   pinned every rising frame) plus the server running that guard while occupied; and damping
   sized for `KP` when the submergence ramp is `g/ramp` = 196 s⁻², sixteen times stiffer.
+
+## 3c. What is left after the 2026-10-27 session
+
+The nine prompt sets are worked through and the place is **published**. Everything below is either
+user-gated or needs a measuring rig that does not exist yet — do not invent work to fill the gap.
+
+| Item | Why it is still open |
+| --- | --- |
+| Sound mix by ear | All 12 IDs load and the zone mix is measured, but nobody has listened. `05-sound.md` |
+| D-11 third-party trees | They exist only in the Studio place; needs the user's model files |
+| Ship-on-ship climb | Forced overlap behaves (contact detected, hull pushed down rather than riding up); a driven collision needs two hulls and a driver |
+| The occupied hull's throttle path | `Humanoid:Move` yields `VehicleSeat.Throttle = 0`, so no probe can drive a hull through its real input. The physics of a moving hull *is* measured (22 studs/s, damped against the water) |
+| Whether `SimDistance` should rise | Records capture it at spawn, so the trade cannot be priced on a running server, and Studio's frame rate is too noisy. Regenerate and measure outside Studio if it matters |
+| A still-water rig | Wave state varies between 9 s windows more than the effects being compared (offset rms 1.09-2.07 on identical builds). Anything needing a small difference measured wants a fixed sea |
+
+Two habits that saved time and should continue:
+
+* **Measure where it floats, on the path the user is on.** The bounce cost two rounds because the
+  harness dropped hulls 5 studs and called the splash a bounce, and because the occupied hull is
+  driven by `Ship.Client` on a completely different code path from the unmanned `Ship.Handler`.
+  The tell for "occupied" is that `UnmannedBuoyancyForce` reads exactly 0.
+* **Check the tool before trusting its green tick.** `find-dead-config` reported "no dead keys" for
+  a config it could not parse at all (0 of 36 keys), and `parity_hash` compares against a saved
+  survey, so a stale survey reports false diffs. Both were caught only by looking at the numbers
+  behind the pass.
 
 ## 4. Rules from the user (do not break)
 
