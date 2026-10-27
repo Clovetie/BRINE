@@ -273,6 +273,32 @@ Two habits that saved time and should continue:
   survey, so a stale survey reports false diffs. Both were caught only by looking at the numbers
   behind the pass.
 
+## 3d. After the 2026-10-27 water-look pass
+
+The user reported "further water optimisation and visual artefacts (it's currently conflicting)".
+`docs/audit/10-water-look.md` is the record; the short version:
+
+* **Fixed**: the mesh colour ramp was sized for a sea three times this one (mean blend -0.13, i.e.
+  the whole sea below the TROUGH colour, CREST never drawn); the far-field LOD band painted a flat
+  TROUGH constant, now the ramp's waterline value; the eight far tiles were at half the main plane's
+  texture density and out of phase at the seam (UV 80.0 against 20.5), now 80.0 against 2.0, a whole
+  78-unit offset.
+* **Optimised**: `UV_WRITE_EVERY` 3 → 6, and a distance-graded position cadence
+  (`FAR_WRITE_DISTANCE = 400`, `FAR_WRITE_EVERY_BEYOND = 2`). The far band's measured step is
+  0.056 studs mean / 0.109 max = **0.07 px / 0.14 px**. **No frame-time claim** — four pinned-camera
+  sessions spanned 149-215 writes/worker on identical settings, and the counter counts vertices, not
+  API calls. Do not cite a perf win without a counter that counts `SetPosition`/`SetColor`/`SetUV`.
+* **Recorded, not changed** — both are decisions, not bugs: D-29 the wave field stops at ~800 studs
+  (2/728 vertices moving at 900 studs) because a cull does not hide geometry; D-30 the whirlpool is
+  a 170-stud mesh-only funnel that no physics follows. If the user's "conflicting" water is the
+  whirlpool, the levers are `DownwardForce` (250) and `Scale` (15, hardcoded in the place's script).
+* New tool: `bash tools/measure/colour-ramp.sh` runs the real `Helper.luau` headless and prints the
+  ramp old vs new. If the colour now looks too contrasty, the single knob is the `* 0.5` in
+  `Helper.HeightToBlend`.
+* Ruled out by measurement, do not re-test: zones missing on the client (both sides hold the same
+  two zones) and "zones only applied when the plane re-snaps" (a camera pinned from t = 2 s still
+  gets the funnel).
+
 ## 4. Rules from the user (do not break)
 
 Carried forward from `00-README.md`, plus what changed this session:

@@ -454,3 +454,43 @@ water, a `Container` 5.93 below it, and offsets swinging up to 7.2 studs. Frozen
 a reference pose and follow the surface on a 0.35 s clock with a 6-per-frame budget: one
 `HeightAt` plus at most one `PivotTo` per visit, no constraints. After: props track the surface
 within 0.1-0.25 studs (3.03 vs 2.95, 5.34 vs 5.35, 2.80 vs 2.81). Detail in `08-floating.md`.
+
+## D-27 — the ocean's colour ramp could not reach the crest colour (FIXED 2026-10-27)
+
+`Helper.GetVertexColor` mapped height to TROUGH → CREST with a hardcoded `((Y - 1) * 4) / 30`,
+which needs 8.5 studs to reach CREST; the shipped wave set's whole envelope is 4.7317. Measured
+over all 3301 live vertices, the mean blend was **-0.131** — the entire sea rendered *below* the
+TROUGH colour, extrapolated out of the pair — and the maximum was +0.19. The ramp is now normalised
+by the sum of the wave amplitudes and clamps the normalised value: span `0.000 … 1.000`, live bands
+0.502 / 0.474 / 0.492 / 0.493. Whitecaps stay off and are now documented as unreachable
+(`WHITECAP_HEIGHT` 6 > envelope 4.7317). `tools/measure/colour-ramp.sh` reruns it. `10-water-look.md` §1.
+
+## D-28 — the eight far ocean tiles were a different texture scale (FIXED 2026-10-27)
+
+`Setup.SetupSecondaryPlanes` built its UVs with `x = Vx / Padding + 1`, while the main plane's
+vertices use `GetUVCoordinates × UV_SCALE`. Measured live: the main plane maps 1 UV unit per 24
+studs, the tiles 1 per 48, so at the ±936 seam the texture jumped from UV **80.0** to **20.5** — half
+the density, 59.5 units out of phase. The tiles now use the main plane's mapping and its waterline
+colour; the seam offset is 78.0 units, an exact integer (1872 / 24), so the pattern is continuous
+across the seam and between tiles. `10-water-look.md` §3.
+
+## D-29 — the wave field stops at ~800 studs and the rest is a flat plate (OPEN, needs a budget call)
+
+A chunk is only computed inside `MaxChunkRenderDistance = 800`, but culling a chunk does not hide
+it: the plane is one MeshPart, so every culled vertex is still drawn, frozen at zero. Measured live,
+moving vertices by radius: 620/656 at 200 studs, 303/388 at 400, **154/319 at 500, 2/728 at 900**;
+rendered-vs-analytic error rises 0.12 (0-100) → 1.38 (900-1000) studs, and the true wave at +900 was
+-1.77 while the mesh was flat. Fixing it costs ~21 % more chunks plus the ~46 % of vertices that are
+currently skipped, so it is a frame-budget decision: raise `MaxChunkRenderDistance` to ~1400 and pay,
+shrink the plane, or leave it. `10-water-look.md` §4.
+
+## D-30 — the whirlpool is a 170-stud hole nothing physical knows about (OPEN, content decision)
+
+`Workspace.Whirlpool` (radius 150 at `313.61, 35.5, 292.16`, 314 studs from spawn) drives
+`GetVortexTransform`, whose downward displacement is `DownwardForce / (Distance / Scale + 1)`:
+**-250 studs at the centre** with the authored `DownwardForce 250` and the script's hardcoded
+`Scale 15`. Measured in the client mesh: world Y down to **-169.1 / -171.1** within 160 studs of it,
+10-18 vertices below -20 studs, against a sea envelope of 4.7317. `GetVortexTransform` is called from
+exactly one place — `ParallelWorker`, the mesh — and both ship scripts skip whirlpool zones, so hulls,
+swimmers and props cross the visible funnel at wave height. Depth and falloff are content values in
+the place, not in `src/`, so nothing was changed. `10-water-look.md` §5.
