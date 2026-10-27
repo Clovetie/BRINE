@@ -456,6 +456,56 @@ No ringing anywhere. The unmanned peaks are larger than the earlier table becaus
 different sea state and a different spot in it — the hull is *following* the swell (3 reversals in 6 s
 is roughly one swell period), which is the behaviour the acceptance criterion asked for.
 
+### Round 3: bouncing in the published game only (2026-10-27, fifth pass)
+
+Reported after publishing: *"It works smoothly outside of studio but all the ships are bouncing
+again."* That is the shape of an environment difference, not a tuning error, so this pass was
+mostly elimination followed by instrumentation. Ruled out, by measurement:
+
+| Hypothesis | Verdict |
+| --- | --- |
+| The `≥ 0` clamp makes the force unstable at low server rates | **no** — a numerical model of the exact force law settles at 60, 45, 30, 24, 20, 15 and 10 Hz |
+| A loaded server stepping physics slower | **no** — starved the server on purpose (18 Hz, mean step 0.055 s): **0 reversals**, same as normal |
+| Duplicate or stale ship scripts in the place | **no** — 80 scripts surveyed: three `Handler`s, three `Client`s, no duplicates; the in-ship `Client` copies are `LocalScript`/`Legacy` in Workspace and do not run |
+| Two clients or two ships fighting | **no** — the clone is given only to the occupant and destroyed when the seat empties |
+| Server and client on different wave clocks | **no** — both use `workspace:GetServerTimeNow()` |
+| Something gated on `IsStudio()` | **no** — `Settings.DEBUG` is the only use, and it only gates prints |
+| Zone multipliers differing between peers | **no** — a hull with no zone gives identical surfaces either way |
+| `default.project.json` mapping / streaming / gravity | **no** — streaming off, gravity 196.2, 40/40 parity |
+
+What is left is the one thing Studio cannot have: **network delay**. Two concrete mechanisms were
+found that only exist live, and both are now handled:
+
+**1. Ownership drift, which turns the spring into a delayed-feedback loop.** Whoever *computes*
+the lift must also *own* the simulation. A hull that is client-owned while the server computes the
+force is driven by a force derived from a stale replicated velocity, arriving a round trip later —
+exactly the shape that turns a damped spring into an oscillator. `Handler` now (a) guards the
+initial `SetNetworkOwner(nil)` in a `pcall`, because one throw there killed the whole handler, and
+(b) runs a **twice-a-second authority watchdog** that compares `Main:GetNetworkOwner()` with who
+should own it, repairs a mismatch, and publishes both facts as attributes (`AuthorityOwner`,
+`AuthorityRepairs`) for diagnosis. Verified in Studio: `server` → `Hirabelan` on seating →
+`server` on leaving, `AuthorityRepairs` never incremented.
+
+**2. Nothing measured what the *player* sees.** Every ship number in this document is the server's
+or a client's read of `AssemblyLinearVelocity`. `StarterPlayerScripts/ShipBounceWatch` now samples
+the nearest hull's **rendered position** for 4 s every 20 s and prints a single `[BRINE]` line if
+the hull reverses direction 6 or more times, with the occupant, the simulation owner, the authority
+repair count, the peak speed and the hull's offset from the surface. It is quiet otherwise, and
+prints one "watch active" line at startup so silence is unambiguous.
+
+Writing it exposed two flaws in my own measuring habits, both now fixed in the tool:
+
+* **It compared the hull against the surface at its CENTRE.** The ship uses the **mean of the four
+  corner heights**. On a 125-stud hull those differ by up to a stud, and the difference oscillates
+  as waves pass — which manufactured a 1.64-stud "residual wobble" that looked exactly like the
+  bug. Against the corner mean it is a fraction of that.
+* **It counted reversals of the raw frame delta.** A replicated hull's position steps in ~0.03-stud
+  quanta, and the sign of those steps flipped **7 times in 4 s on a perfectly calm hull**. It is
+  low-passed now, and a reversal needs the hull to travel `SWING` = 0.08 studs the other way.
+
+Validated both ways in Studio: **calm → 0 reversals, no output**; a forced 15 Hz oscillation on all
+three hulls → **26 reversals, peak 25.1 studs/s**, reported with the full line.
+
 ### The original 6 Hz note (kept for the record; the guess in it was wrong)
 
 Sampling every frame shows a real oscillation, not aliasing (position moves with the velocity):

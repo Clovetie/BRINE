@@ -15,7 +15,19 @@ local ZoneManager = require(ReplicatedStorage.Gerstner.Serial.ZoneManager)
 
 local VehicleSeat = Ship:WaitForChild("VehicleSeat") :: VehicleSeat
 local Main = Ship:WaitForChild("Main") :: BasePart
-VehicleSeat:SetNetworkOwner(nil)
+-- Server authority while the ship is unmanned. This is not cosmetic: whoever COMPUTES
+-- the buoyancy must also OWN the simulation. A hull that is client-owned while the
+-- server computes the lift is driven by a force derived from a stale replicated
+-- velocity, arriving a network round-trip later -- a delayed feedback loop, which is
+-- exactly the shape that turns a damped spring into an oscillator. Studio Play has no
+-- latency, so nothing measured there can show it; a live server can.
+--
+-- Guarded because SetNetworkOwner throws on an assembly that cannot be reassigned (for
+-- example one welded to an anchored part). Unguarded, a single throw here kills the
+-- whole handler and the hull gets no buoyancy at all.
+pcall(function()
+	VehicleSeat:SetNetworkOwner(nil)
+end)
 
 -- This hull's own handling (ShipDrive.Resolve reads the model's attributes), re-read if
 -- the tuning attributes are changed while the ship is idle.
@@ -489,6 +501,38 @@ local function occupantChanged()
 		setUnmanned(true)
 	end
 end
+
+-- Authority watchdog: re-establish the invariant above, and publish what it finds so a
+-- client can report it without server-only API. `GetNetworkOwner()` returns nil when the
+-- server owns the assembly. Throttled to twice a second; costs two property reads.
+local authorityChecks, authorityRepairs = 0, 0
+local nextAuthorityCheck = 0
+RunService.PostSimulation:Connect(function()
+	local now = workspace:GetServerTimeNow()
+	if now < nextAuthorityCheck then
+		return
+	end
+	nextAuthorityCheck = now + 0.5
+	local occupant = VehicleSeat.Occupant
+	local wanted = occupant and Players:GetPlayerFromCharacter(occupant.Parent) or nil
+	local current = nil
+	local ok = pcall(function()
+		current = Main:GetNetworkOwner()
+	end)
+	if not ok then
+		return
+	end
+	authorityChecks += 1
+	Ship:SetAttribute("AuthorityOwner", current and current.Name or "server")
+	if current == wanted then
+		return
+	end
+	authorityRepairs += 1
+	Ship:SetAttribute("AuthorityRepairs", authorityRepairs)
+	pcall(function()
+		VehicleSeat:SetNetworkOwner(wanted)
+	end)
+end)
 
 VehicleSeat:GetPropertyChangedSignal("Occupant"):Connect(occupantChanged)
 setUnmanned(VehicleSeat.Occupant == nil)

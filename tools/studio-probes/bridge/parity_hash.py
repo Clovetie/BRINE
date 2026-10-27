@@ -61,6 +61,7 @@ PAIRS = {
     "StarterPack.StickFishingRod.FishingServer": "src/Workspace/StickFishingRod/FishingServer.server.luau",
     "StarterPack.StickFishingRod.FishPose": "src/Workspace/StickFishingRod/FishPose.luau",
     "StarterPack.StickFishingRod.FishingRetention": "src/Workspace/StickFishingRod/FishingRetention.luau",
+    "StarterPlayer.StarterPlayerScripts.ShipBounceWatch": "src/StarterPlayerScripts/ShipBounceWatch.client.luau",
     # Each hull carries its own copy of the ship scripts
     "Workspace.WoodenShip.Handler": "src/Workspace/singletons/Ship/Handler.server.luau",
     "Workspace.WoodenShip.Client": "src/Workspace/singletons/Ship/Client.client.luau",

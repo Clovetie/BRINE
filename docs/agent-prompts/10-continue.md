@@ -228,6 +228,26 @@ measurement harness was lying. Both traps are worth remembering:
   pinned every rising frame) plus the server running that guard while occupied; and damping
   sized for `KP` when the submergence ramp is `g/ramp` = 196 s⁻², sixteen times stiffer.
 
+## 3b-bis. If "the ships are bouncing" comes back
+
+**Read the `[BRINE]` line first.** `StarterPlayerScripts/ShipBounceWatch` prints one line when a
+hull within 250 studs reverses direction 6+ times in 4 s, and one "watch active" line at startup.
+It reports `occupant`, `owner`, `authority repairs`, `peak |vy|` and the offset from the surface.
+The line discriminates the remaining causes:
+
+* `owner` is a player who is **not** the occupant, or `repairs` is climbing → the delayed-feedback
+  case; the authority watchdog in `Handler` was not enough, and the fix is to stop computing the
+  force on a peer that does not own the hull.
+* reversals high and the offset swinging → the physics itself oscillates on the live server; tune
+  gains against that measurement, not against the server-side velocity reads (they said "calm"
+  while the client saw 7 reversals in 4 s).
+* **no `[BRINE]` line while the player still sees bouncing** → the client's received motion is
+  smooth, so the problem is visual (rendering or interpolation), not physics. Do **not** retune the
+  force; that is a different bug and this is the proof.
+
+Do not trust a server-side reversal count alone. It was 2 per 6 s while the same hull, seen from a
+client, reversed 7 times in 4 s. Measure what the player sees.
+
 ## 3c. What is left after the 2026-10-27 session
 
 The nine prompt sets are worked through and the place is **published**. Everything below is either

@@ -43,6 +43,9 @@
 				},
 				"SwimClient": {
 					"$path": "src/StarterPlayerScripts/SwimClient.client.luau"
+				},
+				"ShipBounceWatch": {
+					"$path": "src/StarterPlayerScripts/ShipBounceWatch.client.luau"
 				}
 			}
 		},
