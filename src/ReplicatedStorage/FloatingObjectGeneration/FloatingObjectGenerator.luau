@@ -2129,9 +2129,32 @@ local function applyFrozenPose(record, now: number, buoyancyConfig)
 	end
 	local pivot = model:GetPivot()
 	if record.frozenRefY == nil then
-		record.frozenRefY = pivot.Position.Y
+		-- Capture the reference ONCE, here. Correct it with the solver if the prop was
+		-- already off the water when it froze (a prop can freeze while it is still being
+		-- lifted back out of a trough); otherwise trust the pose it froze in, which is the
+		-- one either spawnRecord seated or the buoyant sim was holding.
+		--
+		-- The correction is clamped and applied once. `AssemblyCenterOfMass` on an anchored
+		-- assembly does not refresh, so re-deriving it every visit walked props away from the
+		-- water; a single sample at freeze time has a fresh centre of mass to work from.
+		local correction = 0
+		local sim = record.sim
+		local hull = record.hull
+		if sim and hull and hull.Parent and sim.zone ~= nil then
+			local comY = hull.AssemblyCenterOfMass.Y
+			local ok, targetY = pcall(WaveFloat.Solve, sim.points, comY,
+				sim.waterline.WorldPosition.Y, sim.slopeZ, sim.slopeX, sim.heightParam, sim.zone,
+				buoyancyConfig.HeightSource or "ANALYTIC", buoyancyConfig.LookupMethod or "PRECISE", now)
+			if ok and targetY ~= nil then
+				correction = math.clamp(targetY - comY, -8, 8)
+			end
+		end
+		record.frozenRefY = pivot.Position.Y + correction
 		record.frozenRefSurfaceY = surfaceY
 		record.sim.nextFrozenAt = now + (buoyancyConfig.FrozenUpdateInterval or 0.35)
+		if math.abs(correction) > 0.02 then
+			model:PivotTo(CFrame.new(pivot.Position + Vector3.new(0, correction, 0)) * pivot.Rotation)
+		end
 		return
 	end
 	record.sim.nextFrozenAt = now + (buoyancyConfig.FrozenUpdateInterval or 0.35)

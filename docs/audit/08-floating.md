@@ -311,3 +311,10 @@ without its hull sim, which is a bigger question than this pass.
 to ~900. They now move with the water, but a player 400 studs away sees a raft riding the swell
 without the tilt and lean a buoyant one would have. Raising `SimDistance` trades server CPU for
 that fidelity; not changed here, because the LOD budgets were measured deliberately.
+
+I tried to price that trade and could not: each record captures `simDistance` **at spawn**
+(`FloatingObjectGenerator:1567`), so raising `Config.Classes[*].SimDistance` on a running server
+changes nothing until `ClearGenerated()` + `Generate()` — measured, `BuoyantObjects` stayed at 1
+after raising every class to 900. And Studio's server frame rate drifted 42 → 32 → 29 across the
+same session with no change in the workload, so it cannot price the difference either. Anyone
+wanting to change the LOD band should regenerate and measure outside Studio.
