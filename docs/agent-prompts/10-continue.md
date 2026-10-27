@@ -70,6 +70,7 @@ Branch `arena/ocean-sound-and-audit`, PR #9 into `main`. `main` is at `525a9ec` 
 | `a1b2685` | **Ships: per-hull handling, servo goal frame (D-18), Boathouse movers (D-17)** |
 | `8410a97` | Tooling: hash parity (32→39 pairs), per-hull attribute manifest; continue at 08 |
 | `5230580` | **Floating: the system never ran (D-20), pivot-vs-centre seating (D-21), FloatRatio 0.7** |
+| `ca4d4ba` | Prompt 09 triage: status for all 23 defects, D-04's dead Splash loops stopped |
 
 **Nothing after `a4ef9a0` is pushed** (still no GitHub token or `origin` in the new sandbox): this session had no GitHub token and no `origin`
 (`git remote -v` is empty), so `bcfba3c` and `a1b2685` are local commits on the branch.
@@ -301,8 +302,16 @@ sat at −4.00 with its deck 2.3 studs under water. Per-hull handling live: tops
    buoyant path was measured once end to end, islands were not re-measured, and D-23 (no rendered prop
    is ever in the near band) is recorded for the user rather than changed.
 
-**2. Prompt 09 — polish and debug sweep.** The audit list is the input; `01-defects.md` carries the
-   current state of every item, including the ones that were closed with numbers this week.
+**2. Prompt 09 — started: triage is done (A1).** `01-defects.md` now ends with a triage table covering
+   every entry: 15 fixed (with commits), 2 hardened/closed-as-symptom, 4 wont-fix with reasons, 3 open
+   (third-party trees are content work; `find-dead-config` on `Gerstner/Settings` is tooling debt; D-23 is
+   the user's taste call). A2 also verified: `REPORT_EVERY = 0` is the only value anywhere, `Settings.DEBUG`
+   is `IsStudio()`-gated and used at 3 sites, no `Dbg*` attributes (0 of 32), no commented-out code blocks.
+   The two startup `print`s in `IslandGenerator`/`FloatingObjectGenerator` are one-line "streaming started"
+   notices, not debug spam — leave them.
+   **Remaining for 09:** docs drift (task 7 — `ROADMAP.md`, `BOAT_HANDLER.md`, `SWIMMING.md` still
+   describe the pre-fix state, and `BOAT_HANDLER.md` predates the per-hull tuning entirely), dead code via
+   `tools/find-dead-config.js` + `call-graph.js`, and the P2 polish sweep the user would notice.
 
 **3. The open verification list, in `01-defects.md` order** — ship-on-ship climb, the occupied
    (`Client`) path on each hull, the 6 Hz vibration at a steady 60 fps, and the two sound fades that
