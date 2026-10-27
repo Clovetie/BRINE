@@ -145,7 +145,7 @@ parity_hash.py             → 39/39 repo↔Studio pairs match, 0 differ, 0 miss
 | D-15 `find-dead-config` sees 0 keys in `Gerstner/Settings` | tooling | Does not understand that module's shape; no runtime effect |
 | D-23 no rendered prop is ever in the near band | user | `NearDistance` 150 vs `MinPlayerDistance` 200. Fixing changes what the sea looks like close to the boat — a taste call |
 | Occupied (`Client`) ship path | anyone | Every ship number in `07` is the server's unmanned path; boarding a hull is the check |
-| Ship-on-ship climb | anyone | Needs two hulls driven together for ~12 s with a client aboard |
+| Ship-on-ship climb | anyone | **Partially observed** (2026-10-27): with two hulls forced into the same space the contact is detected (8 parts) and the hull is pushed *down* 19.5 studs rather than riding up, but that was a forced overlap, not a driven collision. Still wants two hulls driven together |
 | The sound mix by ear | user | Volumes are reads, not listening |
 | Buoyant prop response sweep | anyone | `PlaceOne` near the player is blocked by `MinPlayerDistance`; the switch to the soft cadence (`08` §7) is the likely cause of the visual difference |
 

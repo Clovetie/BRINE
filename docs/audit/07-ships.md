@@ -354,6 +354,55 @@ but worth knowing when testing it.
 rather than by a human clicking; and no hull has been driven at speed through the `RoughSeaArea`
 zone (2.5× amplitude) since the gain change.
 
+### Follow-up verification of the bounce fix (2026-10-27, third pass)
+
+Three claims I made in the section above were unverified when I made them. All three now
+measured.
+
+**1. The 2.5x rough-sea zone.** Every ship number before this was calm water. Parked in
+`Workspace.RoughSeaArea` (551, -760), where the analytic surface swings 2.5x:
+
+| Hull | reversals / 5 s | peak \|vy\| | centre-vs-surface |
+| --- | --- | --- | --- |
+| `WoodenShip` | 1 (0.2/s) | 0.74 | -4.40 .. -1.09 |
+| `MisoSoup` | **0** | 3.16 | -2.89 .. +0.31 |
+| `Boathouse` | **0** | 2.98 | -1.46 .. +0.61 |
+
+No oscillation. The peak velocities are wave-following, not ringing — zero reversals means
+the velocity never changes sign at all.
+
+**2. A hull launched clear of the water.** Dropped from `surface + 40` studs, `WoodenShip`
+falls, plunges (Y trace 65 -> 7), is lifted back out and settles: **1 reversal, peak 0.75,
+final centre-vs-surface -0.81**. The submergence ramp makes the lift fade to nothing while
+the hull is in the air and come back smoothly on re-entry, which is exactly the case the old
+nil-gate handled by switching.
+
+**3. That the contact change did not break anti-climb.** The old predicate and the new one
+were run side by side on the live hull:
+
+| Situation | Shipped predicate | Old predicate |
+| --- | --- | --- |
+| Player seated, nothing else nearby | **false** | **true** |
+| Player seated, second hull forced into contact | **true** (8 parts: `Part79/96/106/120/121/133`, `Union5/6`) | true |
+
+So the only thing the change excludes is the occupant's own body, and real external geometry
+still registers. Enumerating what actually touches a floating hull confirms it: the **only**
+outside contact in normal play is `Hirabelan`'s `LeftLowerLeg`, `LeftFoot`, `RightLowerLeg`,
+`RightFoot` — the player standing in the hull. That is what anti-climb was reacting to.
+
+Bonus observation on ship-on-ship: with the two hulls forced into the same space, `WoodenShip`
+was pushed **down** 19.5 studs, not up on top of `MisoSoup`. Anti-climb holding. This was a
+forced overlap, not a driven collision, so it is suggestive rather than conclusive.
+
+Two probe techniques worth remembering, both of which cost time here:
+
+* **Never write `main.CFrame` on a welded hull.** It teleports one part of a physics assembly
+  and the welds snap the rest: the hull left at Y 30 arrived at Y 74 319. Use `model:PivotTo`.
+* **Union parts report misleading `Size`/`Position` bounds** in this place — the lowest
+  "collidable part" of `WoodenShip` computes to `bottom Y -2.72` on a `Union` that is really
+  around Y 24. Do not place probe geometry relative to a union's reported bounds; it lands
+  somewhere else and silently reports "no contact".
+
 ### The original 6 Hz note (kept for the record; the guess in it was wrong)
 
 Sampling every frame shows a real oscillation, not aliasing (position moves with the velocity):
