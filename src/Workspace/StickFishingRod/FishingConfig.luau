@@ -50,6 +50,20 @@ Config.Grab = {
 	DragStyle = "TranslateViewPlane", -- DragDetectorDragStyle name: moves in a plane facing the camera, so you can lift it
 }
 
+-- Caught fish lifecycle ---------------------------------------------------------
+-- A caught fish stays in the world so it can be picked up, but nothing used to remove it:
+-- `Workspace.CaughtFish` and the server's `floaters` list only ever grew, and
+-- `updateFloaters()` walks that list every frame, so each catch cost work forever
+-- (measured 2026-10-27: 2 casts -> 2 fish retained, 2 live DragDetectors, no removal path
+-- anywhere in src/). Retention is capped; the stalest fish goes first, and never one that
+-- a player is holding or standing near.
+Config.Caught = {
+	MaxRetained = 24,            -- fish kept in the world before the oldest are cleared
+	MinAge = 20,                 -- never clear a fish younger than this, in seconds
+	CullNearPlayerDistance = 250, -- never clear a fish this close to a player
+	HardCeiling = 40,            -- absolute cap: past this, clear the oldest even if nearby
+}
+
 -- Viewport (the FishingRodUI picture) -------------------------------------------
 Config.Viewport = {
 	ContactDistance = 0.6,   -- bite point within this distance of the bobber counts as contact

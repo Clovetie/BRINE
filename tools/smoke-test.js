@@ -186,6 +186,10 @@ const tSwimModel = transformLuau(
 	read("src/ReplicatedStorage/Swimming/SwimModel.luau"),
 	"swimmodel"
 );
+const tFishingRetention = transformLuau(
+	read("src/Workspace/StickFishingRod/FishingRetention.luau"),
+	"fishingretention"
+);
 const tGenerator = transformLuau(
 	read("src/ReplicatedStorage/FloatingObjectGeneration/FloatingObjectGenerator.luau"),
 	"generator"
@@ -210,6 +214,7 @@ const bundle = [
 	`  Density = ${luaLongString(4, tDensity)},`,
 	`  ShipGuard = ${luaLongString(4, tShipGuard)},`,
 	`  SwimModel = ${luaLongString(4, tSwimModel)},`,
+	`  FishingRetention = ${luaLongString(4, tFishingRetention)},`,
 	"}",
 	tTests,
 ].join("\n");

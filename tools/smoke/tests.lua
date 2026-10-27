@@ -744,6 +744,56 @@ check(SwimModel.TintAlpha(-3, scfg) == 0, "swim tint: none above the surface")
 check(math.abs(SwimModel.TintAlpha(5, scfg) - 0.5) < 1e-9, "swim tint: half strength at half the full depth")
 check(SwimModel.TintAlpha(50, scfg) == 1, "swim tint: full strength when deep")
 
+-- ---------------------------------------------------------------------------
+-- FishingRetention: which caught fish to clear
+-- ---------------------------------------------------------------------------
+local FishingRetention = assert(load(SOURCES.FishingRetention, "=FishingRetention"))()
+local rcfg = FishingRetention.Defaults
+
+local function fishEntry(i, age, distance, held)
+return { model = "fish" .. i, caughtAt = 1000 + i, age = age, distance = distance, held = held or false }
+end
+
+-- under the cap: nothing is cleared, however stale
+local list = {}
+for i = 1, 10 do list[i] = fishEntry(i, 500, math.huge) end
+check(#FishingRetention.SelectClears(list, rcfg) == 0, "retention: under the cap, nothing is cleared")
+
+-- over the cap, all far and old: clear exactly the excess, oldest first
+list = {}
+for i = 1, 31 do list[i] = fishEntry(i, 500, math.huge) end
+local clears = FishingRetention.SelectClears(list, rcfg)
+check(#clears == 31 - rcfg.MaxRetained, "retention: clears exactly the excess")
+check(clears[1].model == "fish1", "retention: clears the oldest first")
+check(clears[#clears].model == "fish" .. (31 - rcfg.MaxRetained), "retention: stops at the cap")
+
+-- near a player: protected even when over the cap
+list = {}
+for i = 1, 30 do list[i] = fishEntry(i, 500, 10) end
+list[31] = fishEntry(31, 0, 10)
+check(#FishingRetention.SelectClears(list, rcfg) == 0, "retention: never clears a fish near a player")
+
+-- held: protected even when over the cap and far away
+list = {}
+for i = 1, 30 do list[i] = fishEntry(i, 500, math.huge, i == 1) end
+clears = FishingRetention.SelectClears(list, rcfg)
+check(#clears == 0 or clears[1].model ~= "fish1", "retention: never clears a fish being held")
+
+-- the fish just caught: its age keeps it even when everything else is clearable
+list = {}
+for i = 1, 30 do list[i] = fishEntry(i, 500, math.huge) end
+list[31] = fishEntry(31, 0, math.huge)
+clears = FishingRetention.SelectClears(list, rcfg)
+for _, c in ipairs(clears) do
+	check(c.model ~= "fish31", "retention: never clears the fish that was just caught")
+end
+
+-- past the hard ceiling the distance protection gives way, or the cap is unbounded
+list = {}
+for i = 1, rcfg.HardCeiling + 3 do list[i] = fishEntry(i, 500, 10) end
+clears = FishingRetention.SelectClears(list, rcfg)
+check(#clears == rcfg.HardCeiling + 3 - rcfg.MaxRetained, "retention: past the hard ceiling it clears nearby fish too")
+
 print(("SUMMARY passed=%d failed=%d buoyCalls=%d lookups=%d"):format(TESTS.passed, TESTS.failed, BUOY_CALLS, LOOKUP_CALLS))
 
 -- String globals for the JS runner (avoids iterating Lua tables from JS).

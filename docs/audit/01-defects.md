@@ -428,3 +428,19 @@ code, and deleting a user's instances is not a polish decision.
 Note for anyone reading the console: the ID is **still** requested once at join. That is the engine
 preloading every `Sound` in the place, not our loop, so it is not a regression signal. Clearing the
 `SoundId` on the two dead instances would remove it entirely; left as the user's call.
+
+## D-24 — caught fish were never removed (FIXED 2026-10-27)
+
+`FishingServer.catchFish` parents every caught fish into `Workspace.CaughtFish` and pushes a record
+into `floaters`, which `updateFloaters()` walks every Heartbeat. Nothing in `src/` ever removed one.
+Measured: 2 casts -> 2 fish retained, 2 live `DragDetector`s. Retention is capped in
+`FishingRetention.luau` with a hold check, a minimum age, and a never-clear-near-a-player rule;
+14 unit tests plus a live 31 -> 24 check. Detail in `06-fishing.md`.
+
+## D-25 — the Rojo project did not place the fishing tool or FloatingGui (FIXED 2026-10-27)
+
+`default.project.json` mapped neither `src/Workspace/StickFishingRod/` nor
+`src/Workspace/FloatingGui.luau`. The live place has the rod in `StarterPack.StickFishingRod` and
+`FloatingGui` in `Workspace`; a build from the project file would have produced neither, and
+`FishingClient` requires `workspace:WaitForChild("FloatingGui")`. Both mapped; the parity manifest
+now covers `FishingRetention` too (40 pairs).

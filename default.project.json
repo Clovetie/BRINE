@@ -14,6 +14,9 @@
 					"$className": "Model",
 					"$path": "src/Workspace/singletons/Ship"
 				}
+			},
+			"FloatingGui": {
+				"$path": "src/Workspace/FloatingGui.luau"
 			}
 		},
 		"ServerScriptService": {
@@ -41,6 +44,13 @@
 				"SwimClient": {
 					"$path": "src/StarterPlayerScripts/SwimClient.client.luau"
 				}
+			}
+		},
+		"StarterPack": {
+			"$className": "StarterPack",
+			"StickFishingRod": {
+				"$className": "Tool",
+				"$path": "src/Workspace/StickFishingRod"
 			}
 		}
 	}

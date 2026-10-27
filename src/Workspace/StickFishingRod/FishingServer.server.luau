@@ -36,6 +36,8 @@ local anchorAttach = anchor:WaitForChild("AnchorAttach")
 local commonFish = ServerStorage:WaitForChild("Fish"):WaitForChild("Common")
 
 local CAST = Config.Cast
+local CAUGHT = Config.Caught
+local FishingRetention = require(script.Parent:WaitForChild("FishingRetention"))
 local BITE = Config.Bite
 local CATCH = Config.Catch
 local FLOAT = Config.Float
@@ -442,6 +444,52 @@ local function updateFloaters()
 end
 
 -- Bite -----------------------------------------------------------------------
+-- Caught fish are kept in the world so they can be picked up, but retention has to be
+-- bounded: the folder and the `floaters` list used to only ever grow, and updateFloaters()
+-- walks that list every Heartbeat, so every catch added permanent per-frame work and a live
+-- DragDetector. FishingRetention owns the decision (and is unit tested); this only gathers the
+-- facts it needs.
+local function pruneCaught()
+	local children = caughtFolder:GetChildren()
+	if #children <= CAUGHT.MaxRetained then
+		return
+	end
+	local held = {}
+	for _, f in ipairs(floaters) do
+		if f.dragging then
+			held[f.fish] = true
+		end
+	end
+	local now = workspace:GetServerTimeNow()
+	local players = Players:GetPlayers()
+	local entries = {}
+	for _, child in ipairs(children) do
+		local pivot = child:GetPivot().Position
+		local nearest = math.huge
+		for _, pl in ipairs(players) do
+			local char = pl.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local d = (hrp.Position - pivot).Magnitude
+				if d < nearest then
+					nearest = d
+				end
+			end
+		end
+		local caughtAt = child:GetAttribute("CaughtAt") or 0
+		entries[#entries + 1] = {
+			model = child,
+			caughtAt = caughtAt,
+			age = now - caughtAt,
+			held = held[child] == true,
+			distance = nearest,
+		}
+	end
+	for _, entry in ipairs(FishingRetention.SelectClears(entries, CAUGHT)) do
+		entry.model:Destroy()
+	end
+end
+
 local function catchFish(player: Player, id: number)
 	if id ~= castId or state ~= "hook" or biteTemplate == nil then
 		return
@@ -484,7 +532,9 @@ local function catchFish(player: Player, id: number)
 			end
 		end
 	end
+	fish:SetAttribute("CaughtAt", workspace:GetServerTimeNow())
 	fish.Parent = caughtFolder
+	pruneCaught()
 
 	clearPreview()
 	fish:SetAttribute("Caught", true)

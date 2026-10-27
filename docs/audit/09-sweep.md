@@ -147,6 +147,7 @@ parity_hash.py             → 39/39 repo↔Studio pairs match, 0 differ, 0 miss
 | Occupied (`Client`) ship path | anyone | Every ship number in `07` is the server's unmanned path; boarding a hull is the check |
 | Ship-on-ship climb | anyone | **Partially observed** (2026-10-27): with two hulls forced into the same space the contact is detected (8 parts) and the hull is pushed *down* 19.5 studs rather than riding up, but that was a forced overlap, not a driven collision. Still wants two hulls driven together |
 | The sound mix by ear | user | Volumes are reads, not listening |
+| ~~Fishing cast cycle~~ | **done 2026-10-27** | Driven from a client probe with `tool:Activate()`; found and fixed D-24 (caught fish were never removed) and D-25 (Rojo never placed the rod). Detail in `06-fishing.md` |
 | Buoyant prop response sweep | anyone | `PlaceOne` near the player is blocked by `MinPlayerDistance`; the switch to the soft cadence (`08` §7) is the likely cause of the visual difference |
 
 ## 9. What to try in Play
