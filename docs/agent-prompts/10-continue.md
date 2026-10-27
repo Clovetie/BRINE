@@ -71,6 +71,11 @@ Branch `arena/ocean-sound-and-audit`, PR #9 into `main`. `main` is at `525a9ec` 
 | `8410a97` | Tooling: hash parity (32→39 pairs), per-hull attribute manifest; continue at 08 |
 | `5230580` | **Floating: the system never ran (D-20), pivot-vs-centre seating (D-21), FloatRatio 0.7** |
 | `ca4d4ba` | Prompt 09 triage: status for all 23 defects, D-04's dead Splash loops stopped |
+| `be6c8b9` | Continue prompt: 08 done, 09 triage done |
+| `fb37fdf` | **Ships: stop the bouncing — hull-bottom gate + damped buoyancy force** |
+| `fadbe84` | Docs: `BOAT_HANDLER.md` catches up with the measured state |
+| `c86d9e8` | ROADMAP: dated verified-state section for the audit pass |
+| `(this)` | `docs/audit/09-sweep.md`: dead code, docs, polish, islands |
 
 **Nothing after `a4ef9a0` is pushed** (still no GitHub token or `origin` in the new sandbox): this session had no GitHub token and no `origin`
 (`git remote -v` is empty), so `bcfba3c` and `a1b2685` are local commits on the branch.
@@ -309,9 +314,14 @@ sat at −4.00 with its deck 2.3 studs under water. Per-hull handling live: tops
    is `IsStudio()`-gated and used at 3 sites, no `Dbg*` attributes (0 of 32), no commented-out code blocks.
    The two startup `print`s in `IslandGenerator`/`FloatingObjectGenerator` are one-line "streaming started"
    notices, not debug spam — leave them.
-   **Remaining for 09:** docs drift (task 7 — `ROADMAP.md`, `BOAT_HANDLER.md`, `SWIMMING.md` still
-   describe the pre-fix state, and `BOAT_HANDLER.md` predates the per-hull tuning entirely), dead code via
-   `tools/find-dead-config.js` + `call-graph.js`, and the P2 polish sweep the user would notice.
+   **09 is now complete** — see `docs/audit/09-sweep.md`: dead code (31 orphans, 0 removed, with the two
+   reasons the tool over-reports), docs drift (`BOAT_HANDLER.md` rewritten in `fadbe84`, ROADMAP dated
+   section in `c86d9e8`, SWIMMING checked clean), polish, and prompt 08's island measurement (34 cached /
+   1 rendered is by design — a record only rises within `radius + 220`). Console at the end of Play holds
+   no game errors.
+   **The only work left is user-gated or needs a live human**: D-11 (models), D-23 (taste), the occupied
+   Client path (board a hull), ship-on-ship climb, and judging the sound by ear. Do not invent work to
+   fill the gap — ask, or re-measure something that was measured on pre-fix code.
 
 **3. The open verification list, in `01-defects.md` order** — ship-on-ship climb, the occupied
    (`Client`) path on each hull, the 6 Hz vibration at a steady 60 fps, and the two sound fades that
