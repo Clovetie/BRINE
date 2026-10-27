@@ -61,6 +61,47 @@ function parseArgs(argv) {
 // We also capture nested eager keys at depth 2 (e.g. `GRID_SETTINGS.Padding`)
 // since those are real properties too, but we only report deadness at the level
 // where a reader would reference them (`_settings.KEY` or `Config.KEY`).
+// Walk one table literal starting at its opening brace and collect the keys that are
+// DIRECT children (depth 1) or eager nested keys (depth 2). Shared by every config shape
+// below, so a module that builds its table in a local (shape C) is read the same way as one
+// that returns a literal (shape A) -- they only differ in where the brace starts.
+function keysFromTableAt(masked, braceIdx) {
+	const keys = new Set();
+	if (braceIdx === -1 || masked[braceIdx] !== '{') return keys;
+	let i = braceIdx;
+	let depth = 0;
+	let j = i;
+	while (j < masked.length) {
+		const c = masked[j];
+		if (c === '{') { depth++; j++; continue; }
+		if (c === '}') { depth--; j++; if (depth === 0) break; continue; }
+		if (c === '"' || c === "'" || c === '`') {
+			const q = c;
+			j++;
+			while (j < masked.length) {
+				if (masked[j] === '\\') { j += 2; continue; }
+				if (masked[j] === q) { j++; break; }
+				j++;
+			}
+			continue;
+		}
+		if (c === '-' && masked[j + 1] === '-') { j += 2; continue; }
+		if (/[A-Za-z_]/.test(c)) {
+			let start = j;
+			while (j < masked.length && /[A-Za-z0-9_]/.test(masked[j])) j++;
+			const tok = masked.slice(start, j);
+			let k = j;
+			while (k < masked.length && /[ \t]/.test(masked[k])) k++;
+			if ((masked[k] === '=' || masked[k] === ':') && depth <= 2) {
+				keys.add(tok);
+			}
+			continue;
+		}
+		j++;
+	}
+	return keys;
+}
+
 function collectConfigKeys(source) {
 	const masked = luau.stripCommentsAndStrings(source);
 	// Support two common config shapes:
@@ -87,36 +128,20 @@ function collectConfigKeys(source) {
 	// --- Shape A: `return { ... }` literal ---
 	const returnIdx = masked.search(/\breturn\s*\{/);
 	if (returnIdx !== -1) {
-		let i = masked.indexOf('{', returnIdx);
-		let depth = 0;
-		let j = i;
-		while (j < masked.length) {
-			const c = masked[j];
-			if (c === '{') { depth++; j++; continue; }
-			if (c === '}') { depth--; j++; if (depth === 0) break; continue; }
-			if (c === '"' || c === "'" || c === '`') {
-				const q = c;
-				j++;
-				while (j < masked.length) {
-					if (masked[j] === '\\') { j += 2; continue; }
-					if (masked[j] === q) { j++; break; }
-					j++;
-				}
-				continue;
-			}
-			if (c === '-' && masked[j + 1] === '-') { j += 2; continue; }
-			if (/[A-Za-z_]/.test(c)) {
-				let start = j;
-				while (j < masked.length && /[A-Za-z0-9_]/.test(masked[j])) j++;
-				const tok = masked.slice(start, j);
-				let k = j;
-				while (k < masked.length && /[ \t]/.test(masked[k])) k++;
-				if ((masked[k] === '=' || masked[k] === ':') && depth <= 2) {
-					keys.add(tok);
-				}
-				continue;
-			}
-			j++;
+		const brace = masked.indexOf('{', returnIdx);
+		for (const k of keysFromTableAt(masked, brace)) keys.add(k);
+	}
+
+	// --- Shape C: `local Name = { ... }` ... `return Name` ---
+	// This is how Gerstner/Settings is written, and the tool used to see ZERO keys in it
+	// because shape B only matched an EMPTY `local Name = {}`. Anything that builds its
+	// table in a local and returns it was silently skipped -- the worst kind of green tick.
+	if (configVar) {
+		const localLit = new RegExp(`\\blocal\\s+${configVar}\\s*=\\s*\\{`);
+		const m = localLit.exec(masked);
+		if (m) {
+			const brace = masked.indexOf('{', m.index);
+			for (const k of keysFromTableAt(masked, brace)) keys.add(k);
 		}
 	}
 
@@ -186,7 +211,7 @@ function main() {
 			console.log('  DEAD (verify before removing):');
 			for (const d of r.dead) console.log(`    ✗ ${d.key}`);
 			if (r.alive.length) {
-				console.log(`  alreaded-referenced (${r.alive.length}): ${r.alive.map((a) => a.key).join(', ')}`);
+				console.log(`  already-referenced (${r.alive.length}): ${r.alive.map((a) => a.key).join(', ')}`);
 			}
 		}
 	}
