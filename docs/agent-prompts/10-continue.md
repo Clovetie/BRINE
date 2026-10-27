@@ -76,6 +76,9 @@ Branch `arena/ocean-sound-and-audit`, PR #9 into `main`. `main` is at `525a9ec` 
 | `fadbe84` | Docs: `BOAT_HANDLER.md` catches up with the measured state |
 | `c86d9e8` | ROADMAP: dated verified-state section for the audit pass |
 | `(this)` | `docs/audit/09-sweep.md`: dead code, docs, polish, islands |
+| `fb37fdf` | Ships: stop the bouncing — hull-bottom gate + PD force (unmanned path) |
+| `fadbe84`, `c86d9e8` | Docs: BOAT_HANDLER rewrite, ROADMAP verified-state section |
+| `0079ab0` | **Ships: the bounce the driver sees — submergence ramp, occupant contact, KD 32** |
 
 **Nothing after `a4ef9a0` is pushed** (still no GitHub token or `origin` in the new sandbox): this session had no GitHub token and no `origin`
 (`git remote -v` is empty), so `bcfba3c` and `a1b2685` are local commits on the branch.
@@ -198,6 +201,26 @@ if both agree on direction.
    Boathouse's legacy movers were live rather than inert. Do not read "no `Enabled`" as "disabled".
 
 ---
+
+## 3b. The bounce, twice — how to measure it if it returns
+
+It came back once because the first fix only covered the unmanned hull, and because the
+measurement harness was lying. Both traps are worth remembering:
+
+* **Measure the path the user is on.** The occupied hull is driven by `Ship.Client` on the
+  driver's machine; the unmanned hull by `Ship.Handler` on the server. They failed for
+  different reasons and a clean number on one says nothing about the other. Seating a player
+  from a server probe (`VehicleSeat:Sit(humanoid)`) and then sampling the replicated
+  `AssemblyLinearVelocity` is enough to tell them apart — the server's `UnmannedBuoyancyForce`
+  reading exactly 0 is the tell that the hull is occupied.
+* **Measure it where it floats.** `/tmp/bounce2.lua` pivots every hull to `surface + 5` before
+  sampling, so its numbers are drop-plus-splash, not steady state. `/tmp/calm.lua` samples the
+  hull where it is and then does the 5-stud drop deliberately as a separate recovery test.
+  Report both, and never call the drop a bounce.
+* The three faults were: a hard nil-gate inside `WaveFloat.Solve` cutting the lift for 39% of
+  frames; `touchingOutside()` counting the welded player as world geometry (so anti-climb
+  pinned every rising frame) plus the server running that guard while occupied; and damping
+  sized for `KP` when the submergence ramp is `g/ramp` = 196 s⁻², sixteen times stiffer.
 
 ## 4. Rules from the user (do not break)
 
