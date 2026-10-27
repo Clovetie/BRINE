@@ -68,8 +68,10 @@ Branch `arena/ocean-sound-and-audit`, PR #9 into `main`. `main` is at `525a9ec` 
 | `a4ef9a0` | `Ship/Client` onto the live `WoodenShip`, parity 45/45 |
 | `bcfba3c` | Audit 05 + 06: sound and fishing measured; D-05 closed by inspection |
 | `a1b2685` | **Ships: per-hull handling, servo goal frame (D-18), Boathouse movers (D-17)** |
+| `8410a97` | Tooling: hash parity (32→39 pairs), per-hull attribute manifest; continue at 08 |
+| `5230580` | **Floating: the system never ran (D-20), pivot-vs-centre seating (D-21), FloatRatio 0.7** |
 
-**Nothing after `a4ef9a0` is pushed**: this session had no GitHub token and no `origin`
+**Nothing after `a4ef9a0` is pushed** (still no GitHub token or `origin` in the new sandbox): this session had no GitHub token and no `origin`
 (`git remote -v` is empty), so `bcfba3c` and `a1b2685` are local commits on the branch.
 Push them with the token URL before opening or updating PR #9.
 
@@ -292,16 +294,12 @@ sat at −4.00 with its deck 2.3 studs under water. Per-hull handling live: tops
 **0. Push.** `git remote add origin https://<token>@github.com/Clovetie/BRINE.git` and push
    `arena/ocean-sound-and-audit`. `bcfba3c` and `a1b2685` are local only.
 
-**1. Prompt 08 — floating objects and islands (the remainder).** Not started. Read
-   `docs/agent-prompts/08-floating-and-islands.md` and re-check its premises against
-   `docs/audit/01-defects.md` first; `01`'s inventory was written before five fixes landed. Known hooks:
-   `FloatingObjectGenerator` is 2 000+ lines with its own buoyancy loop (`startBuoyancyLoop`,
-   `applyBuoyancyTarget`) and a budget system (`NearMaxTargetUpdatesPerFrame` 24,
-   `MaxTargetUpdatesPerFrame` 48); `WaveFloat.Solve`'s mover-frame bug (D-18) is **ship-only**, because
-   floating props build their own `AlignPosition` per record — check whether they share the same
-   centre-vs-attachment error before assuming they are fine.
-   The user's standing rules: floating objects must not despawn or be culled in a player's sight; do
-   not add overhang-sink code for platforms without support underneath.
+**1. Prompt 08 — DONE except two sub-items.** See `docs/audit/08-floating.md`. The big find was
+   D-20: the server script threw on a nil `Config` before it ever called `Generate()`, so the sea had
+   **no props at all**; D-21 was the float height being computed for the box centre but applied to the
+   pivot. Both fixed, `FloatRatio` 0.6 → 0.7 for Small and Medium, A3 passes for real. Left open: the
+   buoyant path was measured once end to end, islands were not re-measured, and D-23 (no rendered prop
+   is ever in the near band) is recorded for the user rather than changed.
 
 **2. Prompt 09 — polish and debug sweep.** The audit list is the input; `01-defects.md` carries the
    current state of every item, including the ones that were closed with numbers this week.

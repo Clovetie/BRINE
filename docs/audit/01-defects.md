@@ -384,3 +384,47 @@ invariant cannot be broken by a config edit. Zero cost today. See `08-floating.m
 200 studs and no rendered prop can enter the fast-cadence band; every prop runs `SoftResponsiveness` 8 at
 `UpdateInterval` 0.12 while the ship runs `Responsiveness` 12 every frame. This is the likeliest reason
 props track the waves more loosely than the ship. A taste/perf trade — recorded for the user, not changed.
+
+
+## Triage (prompt 09, 2026-10-27)
+
+Every entry has a status. `Fixed` names the commit; `wont-fix` gives the reason; `open` names the owner.
+
+| # | Sev | Item | Status |
+|---|---|---|---|
+| D-01 | P1 | `WoodenShip` ran a stale client | **fixed** `a4ef9a0` (Studio copy replaced, parity hash matches) |
+| D-02 | P1 | `IslandConfig` older in Studio | **fixed** `1cb64e2` + Studio, hash match |
+| D-03 | P1 | silent island rise/sink audio | **fixed** `1cb64e2` |
+| D-04 | P1 | two muted looping `Splash` sounds on an unapproved asset | **fixed** 2026-10-27, Studio-only (see below) |
+| D-05 | P2 | unattributed asset `203785492` | **wont-fix** — not in any property or script of any type; seen at runtime, needs a `ContentProvider` trace |
+| D-06 | P2 | duplicate `Gerstner` inside itself | **fixed** `cb1adbd` (deleted in Studio) |
+| D-07 | P2 | server hardcodes the camera report interval | **fixed** `5230580` (the missing `Config` require; the interval is read from config) |
+| D-08 | P2 | fishing rod UI tuning differs | **fixed** `856fb63` |
+| D-09 | P2 | a debug harness ran a PRECISE lookup every frame | **fixed** `cb1adbd` |
+| D-10 | P2 | duplicate zone scripts | **wont-fix** — both exist and both print, but `GetZoneParameters` returns one node per position, so only one answer and one print ever appears. Measured, harmless. |
+| D-11 | P2 | third-party trees live only in Studio | **open** — content work, needs the user's models; not code |
+| D-12 | P2 | three ships built differently | **closed as not-a-defect** — the Boathouse is parked on `Workspace.Part`, not broken (`04`) |
+| D-13 | P2 | `MisoSoup` draft is negative | **fixed as a symptom** — the drafts were compensating for D-18's 16-stud frame error; `Draft` is now a 1:1 lever and the remaining value is a taste call |
+| D-14 | P3 | fishing remotes created at runtime | **wont-fix** — self-healing (`FindFirstChild … or Instance.new`) and both remotes are live; changing it is a fishing rewrite |
+| D-15 | P3 | `find-dead-config` sees 0 keys in `Gerstner/Settings` | **open** — tooling debt, does not affect the game |
+| D-16 | P3 | `check-syntax.js` false-fails without `.tools/` | **wont-fix** as a code change; documented in `10-continue.md` (run `tools/setup-tools.sh`). The three "failures" are the false ones. |
+| D-17 | P1 | legacy `BodyPosition`/`BodyGyro` on a hull | **fixed** `a1b2685` (all four movers removed; they were live) |
+| D-18 | P0 | servo goal in the wrong frame | **fixed** `a1b2685` |
+| D-19 | P1 | one handling profile for the whole fleet | **fixed** `a1b2685` |
+| D-20 | P0 | floating objects never generated | **fixed** `5230580` |
+| D-21 | P1 | frozen props seated by pivot | **fixed** `5230580` |
+| D-22 | P3 | sight rule held by exactly zero margin | **hardened** `5230580` |
+| D-23 | P2 | no rendered prop is ever in the near band | **open** — owner: the user (taste vs perf, see `08-floating.md` §7) |
+
+### D-04 detail (2026-10-27)
+
+`WoodenShip.Prim.Splash` and `Boathouse.Prim.Splash` were both `SoundId = rbxassetid://167123203`,
+`Volume = 0`, `Looped = true`, `Playing = true`. The asset is not approved for the requester, so it could
+never be heard; the only effect was the console spam and a pointless loop. No script references either
+instance (`script_grep "Splash"` finds only the DiveSplash client and the fishing bobber). Both are now
+`Looped = false`, `Playing = false`, read back. The objects themselves are kept — they are content, not
+code, and deleting a user's instances is not a polish decision.
+
+Note for anyone reading the console: the ID is **still** requested once at join. That is the engine
+preloading every `Sound` in the place, not our loop, so it is not a regression signal. Clearing the
+`SoundId` on the two dead instances would remove it entirely; left as the user's call.
