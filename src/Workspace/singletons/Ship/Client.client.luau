@@ -46,8 +46,24 @@ local baseHeight = Main.Size.Y / 2
 -- This force can only ever push UP (clamped at zero), which is what buoyancy is, and it is
 -- explicitly damped, so it cannot overshoot into a limit cycle.
 local BUOY_KP = 12 -- 1/s^2, how hard to chase the waterline
-local BUOY_KD = 8 -- 1/s, damping (critically damped at about 2*sqrt(KP) = 6.9)
+-- Damping has to match the STIFFEST spring in the loop, not just KP. The submergence ramp
+-- below is itself a spring: it changes the lift by one hull weight per SUBMERGE_RAMP studs,
+-- which is g/SUBMERGE_RAMP = 196 s^-2 -- sixteen times stiffer than KP. The two add, so the
+-- loop's stiffness is about 196 + 12 = 208 s^-2, natural frequency ~14.4 rad/s, and
+-- critical damping needs KD ~= 2*14.4 = 29. At the old KD = 8 the damping ratio was 0.24:
+-- measured on MisoSoup with a player aboard, the hull rang at ~3 Hz, 32 vertical reversals
+-- in 6 s, peak 12.9 studs/s, around an otherwise correct depth. 32 is very slightly
+-- over-damped (zeta ~1.1) so it settles without overshoot.
+local BUOY_KD = 32 -- 1/s, damping
 local BUOY_FORCE_CAP = 3 -- cap on the lift, in multiples of the hull's weight
+-- How far the hull's bottom must be under the surface for the lift to be at full
+-- strength. Above this the lift fades out over the same distance, reaching zero as the
+-- bottom clears the water. Buoyancy is proportional to displaced water, so this is a
+-- RAMP, not a switch -- see the note where it is computed.
+local SUBMERGE_RAMP = 1.0
+-- The last non-nil Solve target. Solve returns nil when its own airborne gate trips, and
+-- dropping the lift for those frames is what made hulls bounce.
+local lastTargetY: number? = nil
 
 -- Sea surface under the hull: the mean of the four corner heights, as WaveFloat.Solve
 -- computes its surface. Nil only if every corner lookup failed.
@@ -171,11 +187,27 @@ updateZoneMultipliers()
 -- outside the ship holds the hull's vertical motion, and the floor lifts a hull that
 -- sinks well below its waterline goal (set in the solve below).
 local shipModel = VehicleSeat.Parent :: Instance
+-- A player sitting in the seat is not an obstacle. Their character's parts are welded to
+-- the hull but they are NOT descendants of the ship model, so the old test reported
+-- "touching something outside" for as long as anyone was aboard -- and anti-climb then
+-- pinned every rising frame to zero while the buoyancy lift pushed up. That is the bounce
+-- you see from the driver's seat: measured on MisoSoup with a player aboard, 30 vertical
+-- reversals in 6 s at 5/s, peak 16.4 studs/s, while the same hull with nobody in it was
+-- flat. Keep treating real world geometry as contact.
+local function isOccupantPart(part): boolean
+	local occupant = VehicleSeat.Occupant
+	local character = occupant and occupant.Parent
+	if not character then
+		return false
+	end
+	return part:IsDescendantOf(character)
+end
+
 local function touchingOutside(): boolean
 	for _, instance in ipairs(shipModel:GetDescendants()) do
 		if instance:IsA("BasePart") and instance.CanCollide then
 			for _, other in ipairs(instance:GetTouchingParts()) do
-				if not other:IsDescendantOf(shipModel) then
+				if not other:IsDescendantOf(shipModel) and not isOccupantPart(other) then
 					return true
 				end
 			end
@@ -263,7 +295,17 @@ RunService.PostSimulation:Connect(function(dt)
 
 	-- `nil` means the hull is airborne: stop driving it and let gravity bring
 	-- it back down. Orientation is still commanded so it lands in the right pose.
+	-- Solve's own gate returns nil as soon as the hull's bottom clears the surface. That
+	-- is a HARD switch, and it was the whole bounce: on MisoSoup the lift vanished for
+	-- 39% of frames, the hull fell, re-entered and was caught again -- 2 Hz, peak
+	-- 20.9 studs/s. WoodenShip escaped it only because its Draft keeps its bottom under
+	-- the water. So: keep the last good target, and let submergence below fade the lift
+	-- out continuously instead of cutting it.
 	if targetY ~= nil then
+		lastTargetY = targetY
+	end
+	local aimY = targetY or lastTargetY
+	if aimY ~= nil then
 		-- Goal X/Z is the mover's own column, so the horizontal error is zero
 		-- and the servo only corrects height (see the PerAxis note above).
 		local here = moverAttachment.WorldPosition
@@ -278,7 +320,7 @@ RunService.PostSimulation:Connect(function(dt)
 		-- the waves and the water rides over the deck. Put the goal in the mover's own
 		-- frame instead: the hull centre then settles exactly on targetY - Draft.
 		local draft = Ship:GetAttribute("Draft") or 0
-		local goal = here.Y + ((targetY - draft) - Main.Center.WorldPosition.Y)
+		local goal = here.Y + ((aimY - draft) - Main.Center.WorldPosition.Y)
 		alignPosition.Position = Vector3.new(here.X, goal, here.Z)
 		-- Servo authority rises while the hull is below its band, so it can hold a load.
 		-- Guard reference: sea surface plus SinkRestOffset (default baseHeight - Draft).
@@ -290,13 +332,21 @@ RunService.PostSimulation:Connect(function(dt)
 				+ (Ship:GetAttribute("SinkRestOffset")
 					or (baseHeight - draft + (here.Y - Main.Center.WorldPosition.Y)))
 		end
+
+		-- Submergence, 0..1: full lift once the bottom is SUBMERGE_RAMP under the surface,
+		-- none once it has cleared it. Continuous, so it cannot chatter the way the old
+		-- nil/no-nil switch did, and a hull thrown into the air correctly gets no lift.
+		local submerge = 1
+		if surface ~= nil then
+			submerge = math.clamp((surface - bottomY) / SUBMERGE_RAMP, 0, 1)
+		end
 		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, reference))
 		-- Spring-damper lift on the vertical axis (see BUOY_KP above). `goal` is the mover
 		-- goal in world space, so `goal - here.Y` is the centre-space error.
 		local errY = goal - here.Y
 		local vNow = Main.AssemblyLinearVelocity
 		local mass = Main.AssemblyMass
-		local lift = mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * vNow.Y)
+		local lift = submerge * mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * vNow.Y)
 		buoyancyForce.Force = Vector3.new(0, math.clamp(lift, 0, mass * workspace.Gravity * BUOY_FORCE_CAP), 0)
 		-- Anti-sink: a hull well below its reference is lifted, and contact holds it.
 		local v = Main.AssemblyLinearVelocity

@@ -296,6 +296,64 @@ centre ~3.8 below the surface; measured −2.4 and closing, at ≤2 studs/s).
 **Not verified:** the occupied (`Client`) path got the identical change but was not sampled — boarding a
 hull is the check. Per-hull drafts still need the user's eye now that nothing is fighting them.
 
+### The bounce, round 2 — the driver's seat (2026-10-27, later the same day)
+
+The user came back with "ships are still bouncing". They were right, and the first fix had
+only covered the unmanned hull. Three separate faults, each measured:
+
+**A. My own measurement was contaminated.** The bounce harness pivots each hull to
+`surface + 5` studs before sampling, so every number in the table above includes a 5-stud
+drop and its splash recovery. The steady state was being reported as the drop. New probe
+(`/tmp/calm.lua`) measures the hull **where it floats**, then does the drop deliberately as
+a separate recovery test. Anything measured with the old harness has to be read as
+"drop + ride", not "ride".
+
+**B. The gate was still a hard switch.** `WaveFloat.Solve` returns nil when its own airborne
+test trips, and the ship code dropped the whole lift on those frames. On `MisoSoup` that was
+**39% of frames at zero lift** — the hull fell, re-entered, was caught, and fell again, 2 Hz,
+peak 20.9 studs/s. `WoodenShip` escaped only because its `Draft` keeps its bottom under water.
+The lift is now faded by a **submergence ramp** (zero with the bottom at the surface, full
+once it is `SUBMERGE_RAMP` under, linear between) instead of being switched, and the last good
+`Solve` target is kept rather than discarded, so no frame loses its target.
+
+**C. The seated player was being treated as a wall.** Both scripts' `touchingOutside()` scan
+the hull for touching parts "not a descendant of the ship" — and the player's character, welded
+to the seat, is not a descendant of the ship. So for as long as anyone was aboard, anti-climb
+saw a permanent obstacle and held every **rising** frame at `vy = 0`, while the driver's client
+raised the hull. On top of that the server ran its anti-climb **while occupied** too, so both
+peers wrote `AssemblyLinearVelocity` on the same network-owned assembly. Occupant parts are now
+excluded, and the server's guard stands down while occupied — one authority.
+
+Then the damping had to be re-sized. The submergence ramp is itself a stiff spring
+(`g / SUBMERGE_RAMP` = 196 s⁻²), sixteen times stiffer than `KP` = 12, so the loop's stiffness
+is ≈ 208 s⁻², ω ≈ 14.4 rad/s, and critical damping needs `KD ≈ 29`. At the old `KD` = 8 the
+ratio was **0.24** — underdamped — and the hull rang at ~3 Hz around a *correct* mean depth.
+`KD` is now 32 (ζ ≈ 1.1), `SUBMERGE_RAMP` 1.0.
+
+Final measurements, 6 s steady state in open water, plus a deliberate 5-stud drop:
+
+| Hull | Path | Before | After |
+| --- | --- | --- | --- |
+| `MisoSoup` | occupied (driver aboard) | 32 rev (5.3/s), peak 12.9, span 1.44 | **2 rev (0.3/s), peak 0.47, span 0.72** |
+| `MisoSoup` | unmanned | 39 rev (6.5/s), peak 20.9 | **2 rev, peak 0.46** |
+| `WoodenShip` | unmanned | 24 rev (4.0/s), peak 31.2 | **2 rev, peak 0.32** |
+| `WoodenShip` | occupied, client side | — | **1 rev in 143 frames, peak 0.03** |
+| `Boathouse` | unmanned | (never measured) | **0 rev, peak 0.51** |
+| drop +5 studs, all hulls | recovery | — | 1–5 rev, peak is the fall itself (27–43 studs/s) |
+
+The mean depth is unchanged and correct: `MisoSoup` centre sits +0.36..0.49 above the surface
+with its bottom ~0.5–0.7 under it, `WoodenShip` −1.83. `Draft` now barely moves the settle
+point (swept −7.3 → 2.5 on `MisoSoup`, bottom stays 0.47–1.11 under), so the existing per-hull
+values were left exactly as they were.
+
+`Boathouse` starts the session **42 studs above the water**, resting on its dock, with its
+buoyancy force correctly idle; it floats normally once it is actually in the sea. Not a defect,
+but worth knowing when testing it.
+
+**Still not verified:** the occupied numbers above are one hull at a time, seated by a probe
+rather than by a human clicking; and no hull has been driven at speed through the `RoughSeaArea`
+zone (2.5× amplitude) since the gain change.
+
 ### The original 6 Hz note (kept for the record; the guess in it was wrong)
 
 Sampling every frame shows a real oscillation, not aliasing (position moves with the velocity):
