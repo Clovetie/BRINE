@@ -254,14 +254,18 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 							Dampening += v3new(0, -0.85, 0)
 						end
 
+						-- // Flat far water keeps the write-cheap constant colour, but it is the ramp's
+						-- // waterline value rather than the TROUGH constant, so the LOD band at
+						-- // LowRenderDistance * 2 averages to the same brightness as the graded near field
+						-- // instead of reading as a darker ring. See docs/audit/10-water-look.md.
 						local UpdateSecondary = true
 						if LOWER_QUALITY == true and VertexInIslandRange == false then
-							if Info.AlphaTransparency == 1 and Info.CurrentColor == _settings.WAVE_COLORS.TROUGH then
+							if Info.AlphaTransparency == 1 and Info.CurrentColor == Helper.WATERLINE_COLOR then
 								UpdateSecondary = false
 							end
 						end
 
-						local VertexColor = LOWER_QUALITY == true and _settings.WAVE_COLORS.TROUGH or Helper.GetVertexColor(Transform.Y, 0, ShoreTransparency)
+						local VertexColor = LOWER_QUALITY == true and Helper.WATERLINE_COLOR or Helper.GetVertexColor(Transform.Y, 0, ShoreTransparency)
 						if (Frame + VertexId) % FAR_EVERY == 0 then
 						Computations[VertexId] = {
 							CurrentLerpPosition * Dampening,

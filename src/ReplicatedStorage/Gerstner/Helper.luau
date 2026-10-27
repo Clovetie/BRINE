@@ -35,6 +35,32 @@ local SHORE_COLOR = _settings.WAVE_COLORS.SHORE
 local VORTEX_LOW = _settings.WAVE_COLORS.VORTEX
 local WHITECAP = Color3.new(1, 1, 1)
 
+-- // The colour ramp is scaled in the wave set's own units, not in studs. A Gerstner vertex can
+-- // never sit further from the waterline than the sum of the wave amplitudes, so that sum is the
+-- // envelope the TROUGH -> CREST ramp has to span. The old ramp was a fixed
+-- // `min(((TransformY + -1) * 4) / 30, 1)`, sized for a wave set roughly three times this one:
+-- // on the shipped sea (envelope 4.7317 studs) the measured blend over a whole mesh sample was
+-- // mean -0.13 (i.e. every vertex rendered *below* TROUGH, extrapolated outside the colour pair)
+-- // and its maximum was +0.19, so the CREST colour was never drawn. See docs/audit/10-water-look.md.
+local CREST_ENVELOPE = 0
+for _, Wave in _settings.Waves do
+	CREST_ENVELOPE += Wave.WaveAmplitude
+end
+CREST_ENVELOPE = math.max(CREST_ENVELOPE, 1e-3)
+
+local function HeightToBlend(TransformY: number): number
+	-- // 0 at the deepest trough the wave set can make, 0.5 at the waterline, 1 at the highest crest.
+	return clamp((TransformY / CREST_ENVELOPE) * 0.5 + 0.5, 0, 1)
+end
+
+-- // Exported so the ocean mesh, the far-field LOD colour and the secondary tiles all use one value.
+Helper.CREST_ENVELOPE = CREST_ENVELOPE
+Helper.HeightToBlend = HeightToBlend
+-- // The colour of flat water (blend 0.5). The far field is a constant colour to keep its writes
+-- // cheap; this is the value the graded near field averages to, so the two bands meet without a
+-- // brightness step.
+Helper.WATERLINE_COLOR = COLOR_LOW:Lerp(COLOR_HIGH, 0.5)
+
 local SCROLL_DIRECTION_X, SCROLL_DIRECTION_Y = _settings.UV_SCROLL_DIRECTION.X, _settings.UV_SCROLL_DIRECTION.Y
 local DEPTH_RAY = _settings.DEPTH_RAY_LENGTH
 local DEPTH_RAY_OFFSET = _settings.DEPTH_RAY_OFFSET
@@ -179,16 +205,18 @@ function Helper.IsChunkInView(Point: Vector3, CameraCF: CFrame, distance2: numbe
 end
 
 function Helper.GetVertexColor(TransformY: number, VortexY: number, AlphaTransparency: number): Color3
-	if TransformY < -1 then
-		TransformY = -1
-	end
-
-	local VertexColor = COLOR_LOW:Lerp(COLOR_HIGH, min(((TransformY + -1) * 4)  / 30, 1))
+	-- // No clamp needed before the ramp: HeightToBlend clamps to [0, 1], so the colour stays inside
+	-- // the TROUGH -> CREST pair instead of being extrapolated past either end.
+	local VertexColor = COLOR_LOW:Lerp(COLOR_HIGH, HeightToBlend(TransformY))
 	if AlphaTransparency < 1 then
 		return VertexColor:Lerp(SHORE_COLOR, 1 - (AlphaTransparency / GOLDEN_RATIO))
 	end
 
 	if TransformY > _settings.WHITECAP_HEIGHT then
+		-- // Unreachable with the shipped wave set: WHITECAP_HEIGHT is 6 studs and the set's whole
+		-- // envelope (CREST_ENVELOPE) is 4.73, of which the measured sea used at most 2.9 studs.
+		-- // Left as written: switching whitecaps on is a look decision, not a bug fix.
+		-- // See docs/audit/10-water-look.md.
 		-- // We'll do a mini-version of 'whitecaps' / 'foam' by changing the color to be white if the wave is steeper than usual
 		VertexColor = VertexColor:Lerp(WHITECAP, (TransformY - _settings.WHITECAP_HEIGHT) / 10)
 	end

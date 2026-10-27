@@ -8,6 +8,7 @@ local AssetService = game:GetService('AssetService')
 local ReplicatedStorage = game:GetService('ReplicatedStorage')
 local Types = require(script.Parent.Parent.Types)
 local _settings = require(script.Parent.Parent.Settings)
+local Helper = require(script.Parent.Parent.Helper)
 
 local _QUADS: { [Vector3]: {} }? = {}
 local _TRIANGLES: { [Vector3]: {} }? = {}
@@ -461,17 +462,25 @@ function Setup.SetupSecondaryPlanes(EM: EditableMesh): { { MeshPart | Vector3 } 
 			local POS = EditableMesh:GetPosition(VertexId)
 			local Vx, Vz = POS.X, POS.Z
 
-			local Padding = _settings.GRID_SETTINGS.Padding
-			local x = ((Vx / Padding)) + 1
-			local y = ((Vz / Padding)) + 1
-
-			EditableMesh:SetUV(UVId, Vector2.new(x, y) * _settings.GRID_SETTINGS.PaddingMultiplier)
+			-- // The far tiles must carry the SAME UV mapping as the main plane, or the texture
+			-- // changes density and phase along the seam where they meet. Measured before this:
+			-- // the main plane mapped 1 UV unit per 24 studs (UV = 41 + X/24) while these tiles
+			-- // mapped 1 per 48 (UV = 1 + X/48), so at the seam the texture jumped from UV 80.0 to
+			-- // 20.5 - half the density, out of phase by 59.5 units. GetUVCoordinates is the same
+			-- // function the main plane's vertices use, so the two agree by construction; the tile
+			-- // origins differ by whole multiples of the 48-stud padding (1872 / 24 = 78 UV units,
+			-- // an exact integer), so the pattern stays continuous across tile borders too.
+			local UV = GetUVCoordinates(Vx, Vz) * Setup.SETTINGS.UV_SCALE
+			EditableMesh:SetUV(UVId, UV)
 		end
 	end
 	for i, ColorId in EditableMesh:GetColors() do
 		local VertexId = EditableMesh:GetVerticesWithAttribute(ColorId)[1]
 		if VertexId then
-			EditableMesh:SetColor(ColorId, _settings.WAVE_COLORS.TROUGH)
+			-- // Flat water gets the ramp's waterline colour (blend 0.5), which is what the near
+			-- // field averages to, instead of the TROUGH constant: once the ramp spans the real
+			-- // wave range, TROUGH would be a dark ring at every ocean seam.
+			EditableMesh:SetColor(ColorId, Helper.WATERLINE_COLOR)
 		end
 	end
 
