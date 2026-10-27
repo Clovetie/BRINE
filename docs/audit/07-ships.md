@@ -247,7 +247,56 @@ removed, so it is no longer the forced oscillation; it is the loosest of the thr
 unchanged: with the frame fix in place, `Draft` is a clean 1:1 lever and this is a taste value the user
 should set by eye (see §7).
 
-### The 6 Hz vibration
+### The bounce — SOLVED (2026-10-27, supersedes the guess below)
+
+The user reported the ships as "BOUNCY". Measured on `WoodenShip` at a fixed XZ, settled:
+**24 vertical-velocity reversals in 6 s (≈2 Hz), peak |vy| 31.2 studs/s, 5.85 studs of offset span.** A
+hull following a 2.4-stud wave should move at ~2.5 studs/s and reverse twice per wave (~0.15 Hz), so this
+was oscillation, not wave-following.
+
+Two causes, both measured:
+
+1. **The airborne gate tested the hull CENTRE.** `WaveFloat.Solve` returns nil when
+   `surfaceY - waterlineY <= AIRBORNE_DEPTH (-0.5)`, and `Ship.Client`/`Handler` passed
+   `Main.Center.WorldPosition.Y` as `waterlineY` — while the reference `BoatManager` passes `Bottom.Y`.
+   A ship at rest has its centre *above* the water and its bottom *under* it, so the gate fired every few
+   frames: the solver returned nil, the servo switched off, the hull free-fell at up to −27 studs/s,
+   crossed the threshold, was caught and thrown back at +25. Instrumented: **7 servo `Enabled` toggles in
+   2.2 s**, with the hull bottom 1.7 studs underwater when it was being called "airborne". Fixed by
+   passing `Main.Center.WorldPosition.Y - baseHeight`, the reference's own convention.
+2. **`AlignPosition` cannot do this job.** Even with the gate fixed it kept oscillating, and the isolated
+   test was conclusive: with the goal set 4 studs *below* the attachment, the hull accelerated **upward**
+   at ~5× gravity and rose 5.2 studs. A position servo driving a heavy rigid body against gravity, with
+   `MaxVelocity` 80 and `Responsiveness` 12, has no stable damping here.
+
+The vertical drive is now an explicit spring-damper **force** in `Ship.Handler` and `Ship.Client`:
+
+```lua
+local BUOY_KP, BUOY_KD, BUOY_FORCE_CAP = 12, 8, 3
+local errY = goal - here.Y                       -- centre-space error
+local lift = mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * vNow.Y)
+buoyancyForce.Force = Vector3.new(0, math.clamp(lift, 0, mass * workspace.Gravity * BUOY_FORCE_CAP), 0)
+```
+
+It can only push **up** (clamped at 0) — buoyancy cannot pull a hull under — and the damping is explicit
+(critical at ≈ 2√12 = 6.9, so 8 is slightly over-damped). The `AlignPosition` is left in place, disabled.
+
+After (`WoodenShip`, same method):
+
+| | before | after |
+|---|---|---|
+| vertical reversals in 6 s | 24 (≈2 Hz) | **0** |
+| peak \|vy\| | 31.2 studs/s | **2.0** |
+| offset span | 5.85 studs | 8.07 studs (slow drift, no oscillation) |
+
+Zero reversals means the hull's vertical velocity never changed sign in the whole window: it is following
+the water smoothly. The wider span is the hull still easing down toward its draft (`Draft` 5.5 wants the
+centre ~3.8 below the surface; measured −2.4 and closing, at ≤2 studs/s).
+
+**Not verified:** the occupied (`Client`) path got the identical change but was not sampled — boarding a
+hull is the check. Per-hull drafts still need the user's eye now that nothing is fighting them.
+
+### The original 6 Hz note (kept for the record; the guess in it was wrong)
 
 Sampling every frame shows a real oscillation, not aliasing (position moves with the velocity):
 

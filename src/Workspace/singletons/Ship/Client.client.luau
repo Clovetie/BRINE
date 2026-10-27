@@ -36,6 +36,19 @@ local boatWidth = Main.Size.X
 local boatLength = Main.Size.Z
 local baseHeight = Main.Size.Y / 2
 
+-- Vertical buoyancy is a spring-damper FORCE, not a position servo. The AlignPosition
+-- could not do this job: its goal is a world position, so on a heavy rigid body it either
+-- yanked or fought gravity, and `WaveFloat.Solve` returns nil whenever the hull CENTRE is
+-- above the water -- which is exactly where a ship at rest sits -- so the constraint
+-- toggled on and off every few frames. Measured on WoodenShip: 7 Enabled toggles in 2.2 s,
+-- ~2 Hz, 31 studs/s peak vertical speed, 5.8 studs of offset span. That was the bounce.
+--
+-- This force can only ever push UP (clamped at zero), which is what buoyancy is, and it is
+-- explicitly damped, so it cannot overshoot into a limit cycle.
+local BUOY_KP = 12 -- 1/s^2, how hard to chase the waterline
+local BUOY_KD = 8 -- 1/s, damping (critically damped at about 2*sqrt(KP) = 6.9)
+local BUOY_FORCE_CAP = 3 -- cap on the lift, in multiples of the hull's weight
+
 -- Sea surface under the hull: the mean of the four corner heights, as WaveFloat.Solve
 -- computes its surface. Nil only if every corner lookup failed.
 local function seaSurfaceAt(zone, now: number): number?
@@ -84,6 +97,14 @@ alignPosition.RigidityEnabled = false
 alignPosition.Position = moverAttachment.WorldPosition
 alignPosition.Enabled = false
 alignPosition.Parent = VehicleSeat
+
+local buoyancyForce = Instance.new("VectorForce")
+buoyancyForce.Name = "ShipBuoyancyForce"
+buoyancyForce.Attachment0 = moverAttachment
+buoyancyForce.RelativeTo = Enum.ActuatorRelativeTo.World
+buoyancyForce.ApplyAtCenterOfMass = true
+buoyancyForce.Force = Vector3.zero
+buoyancyForce.Parent = VehicleSeat
 
 local alignOrientation = Instance.new("AlignOrientation")
 alignOrientation.Name = "ShipWaveOrientation"
@@ -218,10 +239,19 @@ RunService.PostSimulation:Connect(function(dt)
 	-- Analytic surface (the Gerstner sum the ocean mesh is displaced with), so
 	-- the ship floats without needing HeightLookup.ClientInit on the client.
 	local now = workspace:GetServerTimeNow()
+	-- `waterlineY` is the depth reference the airborne gate tests, and it must be the
+	-- hull's BOTTOM, exactly as BoatManager passes `Bottom.Y` for the reference
+	-- ServerBoat. Passing the hull centre made the gate fire while the ship was
+	-- floating: on WoodenShip the centre rides ~4 studs above the water and the bottom
+	-- ~1.7 under it, so `depth <= AIRBORNE_DEPTH` was true every few frames, the solver
+	-- returned nil, the servo switched off, the hull free-fell at up to -27 studs/s,
+	-- crossed the threshold, was caught and thrown back up at +25 (measured: 7 servo
+	-- Enabled toggles in 2.2 s, ~2 Hz). That was the ship "bouncing".
+	local bottomY = Main.Center.WorldPosition.Y - baseHeight
 	local targetY, orientation, depth = WaveFloat.Solve(
 		buoyancyPoints,
 		Main.CenterOfMass.Y,
-		Main.Center.WorldPosition.Y,
+		bottomY,
 		boatLength,
 		boatWidth,
 		baseHeight,
@@ -237,7 +267,7 @@ RunService.PostSimulation:Connect(function(dt)
 		-- Goal X/Z is the mover's own column, so the horizontal error is zero
 		-- and the servo only corrects height (see the PerAxis note above).
 		local here = moverAttachment.WorldPosition
-		alignPosition.Enabled = true
+		alignPosition.Enabled = false -- replaced by the PD force below
 		-- Draft (WoodenShip's attribute, 0 on Boat) lowers the goal so the hull sits
 		-- under the surface like the Boat does.
 		--
@@ -261,7 +291,13 @@ RunService.PostSimulation:Connect(function(dt)
 					or (baseHeight - draft + (here.Y - Main.Center.WorldPosition.Y)))
 		end
 		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, reference))
-		alignPosition.MaxAxesForce = Vector3.new(0, maxForce * (1 + (depth / 10) + reserve), 0)
+		-- Spring-damper lift on the vertical axis (see BUOY_KP above). `goal` is the mover
+		-- goal in world space, so `goal - here.Y` is the centre-space error.
+		local errY = goal - here.Y
+		local vNow = Main.AssemblyLinearVelocity
+		local mass = Main.AssemblyMass
+		local lift = mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * vNow.Y)
+		buoyancyForce.Force = Vector3.new(0, math.clamp(lift, 0, mass * workspace.Gravity * BUOY_FORCE_CAP), 0)
 		-- Anti-sink: a hull well below its reference is lifted, and contact holds it.
 		local v = Main.AssemblyLinearVelocity
 		local vy = ShipGuard.ResolveVertical(v.Y, here.Y, reference, touchingOutside)
@@ -270,6 +306,7 @@ RunService.PostSimulation:Connect(function(dt)
 		end
 	else
 		alignPosition.Enabled = false
+		buoyancyForce.Force = Vector3.zero
 	end
 
 	alignOrientation.CFrame = CFrame.fromEulerAnglesXYZ(0, currentRotation, 0) * orientation
