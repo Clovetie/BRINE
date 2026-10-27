@@ -260,3 +260,54 @@ action; still needs a `ContentProvider:PreloadAsync` trace at join to name it.
 * **Island density/rings** (prompt requirements 1 and 2 as they apply to islands) were not re-measured:
   `IslandGenerator` is at parity and the user's complaint in this prompt is about floating objects.
 * **The near-band/tuning question in §7** is recorded, not decided.
+
+
+---
+
+## The frozen band was hanging in the air (found and fixed 2026-10-27)
+
+Prompt 08 ended with the float system working for *buoyant* props. Nobody had looked at the
+**frozen** ones, which is most of them: at spawn all **23** rendered props reported
+`FloatingState = Frozen`, i.e. anchored in place, because `SimDistance` is 170–300 studs while
+props render out to ~900. Freezing is deliberate LOD — zero physics, no replication — but the
+sea keeps moving under an anchored prop, and it is still visible for hundreds of studs.
+
+Measured over 6 s with the surface moving 2–6 studs, sampling the eight nearest frozen props:
+
+| | before | after |
+| --- | --- | --- |
+| prop's own vertical span | **0.00 studs, every prop** | matches the surface within 0.1–0.25 |
+| worst offender | a `Lifeboat` centred **3.60 studs above** the water; a `Container` **5.93 under** it | rafts track 3.03 vs 2.95, 5.34 vs 5.35, 2.80 vs 2.81 |
+| offset swing as waves pass | up to **7.2 studs** | follows the same motion as the water |
+
+So a player looking out saw boats hovering in the air and cargo sunk out of sight, with the gap
+breathing by several studs as waves went by. That is a bigger visual error than the ship bounce
+the user reported, and it was invisible to every earlier measurement because every earlier
+measurement was taken within `SimDistance` of the player.
+
+The fix is deliberately cheap: a frozen prop keeps the pose it had when it froze (that pose was
+correct — it was either seated by `spawnRecord` or buoyant a moment earlier) and follows the
+surface from there. **One `HeightAt` and at most one `PivotTo` per visit**, on a slow clock
+(`FrozenUpdateInterval` 0.35 s) with its own per-frame budget (`MaxFrozenUpdatesPerFrame` 6). No
+constraints, no solver, no physics — the whole point of the frozen band is that it costs nothing.
+
+Two mistakes on the way, both caught by measurement:
+
+* **First version set the hull centre to `WaveFloat.Solve`'s target** and moved the model by the
+  difference. An **anchored assembly's `AssemblyCenterOfMass` does not refresh**, so every visit
+  re-applied an error against a stale value and props walked away from the water — one
+  `Container` swung 17 studs. A stored reference pose cannot drift; that is what it does now.
+* **Sampling at `record.centerPos`** — the cell position, not the prop's — put the prop on a
+  different part of the wave than the one it was floating in, because these waves are only
+  25–58 studs long. Measured: a prop moved 0.96 studs while the water under it moved 8.06.
+  Sampling at the model's own pivot fixed the remaining lag.
+
+Known limitation, left as is: a prop that was *already* misplaced when it froze keeps that
+placement, because the reference is captured at freeze time. It follows the sea correctly, just
+from the wrong height. Fixing that means deciding what a frozen prop's float height should be
+without its hull sim, which is a bigger question than this pass.
+
+**What is still by design:** props are frozen beyond their `SimDistance` (170–300) while visible
+to ~900. They now move with the water, but a player 400 studs away sees a raft riding the swell
+without the tilt and lean a buoyant one would have. Raising `SimDistance` trades server CPU for
+that fidelity; not changed here, because the LOD budgets were measured deliberately.

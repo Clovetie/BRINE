@@ -296,6 +296,16 @@ FloatingObjectConfig.Buoyancy = {
 	MaxTargetUpdatesPerFrame = 48,
 	NearMaxTargetUpdatesPerFrame = 24,
 
+	-- Frozen props are anchored in place: no physics, no replication. But the sea keeps
+	-- moving under them and they are still visible for hundreds of studs, so they used to
+	-- hang in mid-air and sink at random -- measured 2026-10-27 over 6 s, a frozen Lifeboat
+	-- sat 3.60 studs above the water, a Container 5.93 below it, and Rafts swung up to 7.2
+	-- studs as waves passed. Each frozen prop now gets ONE pose write per visit, on its own
+	-- slow clock, from the same solver the buoyant props use. No constraints, no physics, and
+	-- a per-frame budget so a full scene cannot spike the server.
+	FrozenUpdateInterval = 0.35,
+	MaxFrozenUpdatesPerFrame = 6,
+
 	-- Wave zone multipliers (island/whirlpool damping) are re-read at most this
 	-- often per object; ZoneManager:GetZoneParameters is comparatively
 	-- expensive so it must not run every frame.

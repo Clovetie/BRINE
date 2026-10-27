@@ -444,3 +444,13 @@ Measured: 2 casts -> 2 fish retained, 2 live `DragDetector`s. Retention is cappe
 `FloatingGui` in `Workspace`; a build from the project file would have produced neither, and
 `FishingClient` requires `workspace:WaitForChild("FloatingGui")`. Both mapped; the parity manifest
 now covers `FishingRetention` too (40 pairs).
+
+## D-26 — frozen props hung in mid-air and sank under the surface (FIXED 2026-10-27)
+
+Every rendered prop is frozen (anchored) beyond its `SimDistance` of 170-300 studs, but stays
+visible out to ~900. Nothing moved them while the sea moved under them: measured over 6 s, all 23
+rendered props had a vertical span of **0.00**, with a `Lifeboat` centred 3.60 studs above the
+water, a `Container` 5.93 below it, and offsets swinging up to 7.2 studs. Frozen records now keep
+a reference pose and follow the surface on a 0.35 s clock with a 6-per-frame budget: one
+`HeightAt` plus at most one `PivotTo` per visit, no constraints. After: props track the surface
+within 0.1-0.25 studs (3.03 vs 2.95, 5.34 vs 5.35, 2.80 vs 2.81). Detail in `08-floating.md`.

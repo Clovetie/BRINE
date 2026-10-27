@@ -109,6 +109,7 @@ local blockedCellRetryAt = {}
 -- Rendered/runtime state.
 local activeRecords = {} -- [record] = true while its clone is in Workspace
 local buoyantRecords = {} -- [record] = true while simulating buoyancy
+local frozenRecords = {} -- [record] = true while anchored in the far band (pose still follows the sea)
 local recordsByModel = {} -- [Model] = record
 local renderedCount = 0
 
@@ -867,6 +868,9 @@ local function unmarkRendered(record)
 	record.rendered = false
 	renderedCount = math.max(0, renderedCount - 1)
 	activeRecords[record] = nil
+	if frozenRecords[record] then
+		frozenRecords[record] = nil
+	end
 	if buoyantRecords[record] then
 		buoyantRecords[record] = nil
 	end
@@ -1022,10 +1026,16 @@ local function setObjectFrozen(record, frozen: boolean)
 			sim.yaw = currentYaw(hull)
 			sim.nextUpdateAt = 0
 			buoyantRecords[record] = true
+			frozenRecords[record] = nil
+			record.frozenRefY = nil
+			record.frozenRefSurfaceY = nil
 		end
 		setOwnership(record, true)
 	elseif sim then
 		buoyantRecords[record] = nil
+		-- Still needs the sea: see applyFrozenPose.
+		frozenRecords[record] = true
+		sim.nextFrozenAt = 0
 	end
 end
 
@@ -2080,6 +2090,59 @@ end
 	near-band budget is not skipped: it falls through to the staggered class and
 	is serviced there, so a crowded dock cannot starve the props behind it.
 ]]
+-- Frozen props are anchored, so nothing moves them. The surface still does. Each frozen
+-- prop keeps the pose it had when it froze (that pose was correct: it was either seated by
+-- spawnRecord or it was buoyant a moment earlier) and follows the sea from there, one pivot
+-- write per visit on a slow clock. No constraints, no physics, no solver.
+--
+-- Deliberately NOT computed from hull.AssemblyCenterOfMass: an anchored assembly's centre of
+-- mass does not refresh, so an error accumulated on every visit and the props walked away
+-- from the water (measured: one Container swung 17 studs). A stored reference pose cannot
+-- drift.
+local function applyFrozenPose(record, now: number, buoyancyConfig)
+	local model = record.model
+	if not model or not model.Parent then
+		return
+	end
+	local zone = record.sim and record.sim.zone or nil
+	local source = buoyancyConfig.HeightSource or "ANALYTIC"
+	if source == "MESH" and zone == nil then
+		-- A MESH lookup reads CURRENT_ZONE off the zone table; without one, use the
+		-- analytic surface instead of erroring out of the loop.
+		source = "ANALYTIC"
+	end
+	-- Sample where the prop IS, not where it spawned: `record.centerPos` is the cell
+	-- position, and the waves here are 25-58 studs long, so sampling there put the prop on
+	-- a different part of the wave than the one it is floating in (measured: a prop moving
+	-- 0.96 studs while the water under it moved 8.06).
+	local here = model:GetPivot().Position
+	local surfaceY = WaveFloat.HeightAt(
+		Vector3.new(here.X, 0, here.Z),
+		zone,
+		source,
+		buoyancyConfig.LookupMethod or "PRECISE",
+		now
+	)
+	if surfaceY == nil then
+		record.sim.nextFrozenAt = now + 0.25
+		return
+	end
+	local pivot = model:GetPivot()
+	if record.frozenRefY == nil then
+		record.frozenRefY = pivot.Position.Y
+		record.frozenRefSurfaceY = surfaceY
+		record.sim.nextFrozenAt = now + (buoyancyConfig.FrozenUpdateInterval or 0.35)
+		return
+	end
+	record.sim.nextFrozenAt = now + (buoyancyConfig.FrozenUpdateInterval or 0.35)
+	local wanted = record.frozenRefY + (surfaceY - record.frozenRefSurfaceY)
+	local delta = wanted - pivot.Position.Y
+	if math.abs(delta) < 0.02 then
+		return
+	end
+	model:PivotTo(CFrame.new(pivot.Position + Vector3.new(0, delta, 0)) * pivot.Rotation)
+end
+
 local function startBuoyancyLoop()
 	if buoyancyConnection then
 		return
@@ -2103,6 +2166,24 @@ local function startBuoyancyLoop()
 					budget -= 1
 				end
 				applyBuoyancyTarget(record, now, near, buoyancyConfig)
+			end
+		end
+
+		-- Frozen props: same idea, far slower clock and a much smaller budget.
+		local frozenBudget = buoyancyConfig.MaxFrozenUpdatesPerFrame or 6
+		if frozenBudget > 0 then
+			for record in frozenRecords do
+				local sim = record.sim
+				if sim and record.state == "Frozen" then
+					if now < (sim.nextFrozenAt or 0) then
+						continue
+					end
+					if frozenBudget <= 0 then
+						break
+					end
+					frozenBudget -= 1
+					applyFrozenPose(record, now, buoyancyConfig)
+				end
 			end
 		end
 	end)
@@ -2362,6 +2443,7 @@ function FloatingObjectGenerator.ClearGenerated()
 	table.clear(ownedCountByPlayer)
 	table.clear(activeRecords)
 	table.clear(buoyantRecords)
+	table.clear(frozenRecords)
 	table.clear(recordsByModel)
 	table.clear(placedRecords)
 	renderedCount = 0

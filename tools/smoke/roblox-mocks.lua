@@ -150,6 +150,7 @@ Vector3.one = Vector3.new(1, 1, 1)
 -- CFrame (full 3x3 rotation + translation)
 -- ----------------------------------------------------------------------------
 local CFrame = {}
+local cfFromMatrix -- defined below; CFrame.__index needs it as an upvalue
 CFrame.__index = function(self, key)
 	if key == "Position" then
 		return Vector3.new(self.p.X, self.p.Y, self.p.Z)
@@ -159,6 +160,10 @@ CFrame.__index = function(self, key)
 		return Vector3.new(self.m[1], self.m[4], self.m[7])
 	elseif key == "YVector" then
 		return Vector3.new(self.m[2], self.m[5], self.m[8])
+	elseif key == "Rotation" then
+		-- The engine's CFrame.Rotation: the same basis with no translation. Used by the
+		-- frozen-prop pose update (`CFrame.new(pos) * pivot.Rotation`).
+		return cfFromMatrix(Vector3.new(0, 0, 0), self.m)
 	elseif key == "UpVector" then
 		-- Same as VectorToWorldSpace(Vector3.yAxis): second column of the
 		-- row-major basis, exactly like the engine's CFrame.UpVector.
@@ -169,7 +174,7 @@ end
 CFrame.__tostring = function(a)
 	return "CFrame" .. tostring(a.p)
 end
-local function cfFromMatrix(p, m)
+function cfFromMatrix(p, m)
 	return setmetatable({ p = p, m = m }, CFrame)
 end
 -- Row-major 3x3 product: m[i*3+j] is row i, column j, and the basis vectors
