@@ -169,9 +169,19 @@ local Settings = {
 		-- // i.e. about +0.46 ms/frame across six workers, over two sessions.
 		-- // See docs/audit/02-waves-findings.md.
 		FAR_WRITE_EVERY = 1, -- // far (low-detail) vertices: position and colour written every N frames
-		-- // The UV scroll is a texture scroll, not geometry, so 20 Hz is invisible
-		-- // and this keeps most of the write saving (225 vs 237 writes/worker).
-		UV_WRITE_EVERY = 3, -- // UV scroll written every N frames (the scroll is slow)
+		-- // The UV scroll is a texture scroll, not geometry, so a low cadence is invisible.
+		-- // UV_WRITE_EVERY = 6: a UV write costs about 7x a position write (5.7 us vs 0.82 us, one
+		-- // session each - a lead, not a result; docs/audit/03-perf.md). The scroll is a pure texture
+		-- // scroll at 1/12 UV per second, so at 60 fps a 6-frame cadence steps it 0.0083 UV units,
+		-- // about 0.2 studs of texture travel per write: not resolvable at any view distance.
+		UV_WRITE_EVERY = 6, -- // UV scroll written every N frames (the scroll is slow)
+
+		-- // Distance-graded position/colour cadence (see ParallelWorker). Inside FAR_WRITE_DISTANCE
+		-- // a low-detail vertex is written every frame; beyond it, every FAR_WRITE_EVERY_BEYOND'th.
+		-- // 400 studs is the same edge the far field already uses for its flat colour
+		-- // (LowRenderDistance * 2), so the two LOD shortcuts change over together.
+		FAR_WRITE_DISTANCE = 400,
+		FAR_WRITE_EVERY_BEYOND = 2,
 		REPORT_EVERY = 0, -- // dev only: warn a write-time summary every N frames per worker (0 = off)
 	},
 

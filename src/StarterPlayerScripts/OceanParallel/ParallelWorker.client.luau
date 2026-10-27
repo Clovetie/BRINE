@@ -103,6 +103,14 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 	local SerialMs, WriteCount, SerialFrames, ParallelMs = 0, 0, 0, 0
 	local FAR_EVERY = math.max(1, math.floor(_settings.PERF.FAR_WRITE_EVERY))
 	local UV_EVERY = math.max(1, math.floor(_settings.PERF.UV_WRITE_EVERY))
+	-- // Distance-graded cadence: inside FAR_WRITE_DISTANCE every low-detail vertex is written every
+	-- // frame (unchanged); beyond it, every Nth frame. What matters is the step per write, and out
+	-- // there it is sub-pixel: at SeaState 1.0 a far vertex moves 0.151 studs per 20 Hz write, so 30
+	-- // Hz (every 2nd frame) is a 0.075-stud step, which at the 400-stud near edge of the band
+	-- // subtends 0.12 px and is 7% of the ~1.1-stud error the far band already carries against the
+	-- // analytic surface (measured; docs/audit/10-water-look.md).
+	local FAR_NEAR_DISTANCE = _settings.PERF.FAR_WRITE_DISTANCE or math.huge
+	local FAR_EVERY_BEYOND = math.max(1, math.floor(_settings.PERF.FAR_WRITE_EVERY_BEYOND or FAR_EVERY))
 	RS.Heartbeat:ConnectParallel(function(dt: number)
 		Frame += 1
 		local pStart = if REPORT_EVERY > 0 then tick() else 0
@@ -133,6 +141,8 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 			local ChunkData = ChunkInfo[ChunkOffset]
 			local DistanceToChunk = (ChunkPosition - CameraXZ).Magnitude
 			local LOWER_QUALITY = DistanceToChunk > _settings.LowRenderDistance * 2
+			-- // How often this chunk's low-detail vertices are written (1 = every frame).
+			local WriteEvery = if DistanceToChunk > FAR_NEAR_DISTANCE then FAR_EVERY_BEYOND else FAR_EVERY
 
 			-- // Use frustum culling in order to
 			-- // not render any chunks that aren't on the screen
@@ -266,7 +276,7 @@ Actor:BindToMessage('Compute', function(waves, Plane: MeshPart, EditableMesh: Ed
 						end
 
 						local VertexColor = LOWER_QUALITY == true and Helper.WATERLINE_COLOR or Helper.GetVertexColor(Transform.Y, 0, ShoreTransparency)
-						if (Frame + VertexId) % FAR_EVERY == 0 then
+						if (Frame + VertexId) % WriteEvery == 0 then
 						Computations[VertexId] = {
 							CurrentLerpPosition * Dampening,
 
