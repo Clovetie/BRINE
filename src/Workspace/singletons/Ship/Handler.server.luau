@@ -119,6 +119,7 @@ local SUBMERGE_RAMP = 1.0
 -- The last non-nil Solve target. Solve returns nil when its own airborne gate trips, and
 -- dropping the lift for those frames is what made hulls bounce.
 local lastTargetY: number? = nil
+local state = { lastSurface = nil, lastSurfaceAt = nil, surfaceVy = 0 }
 
 -- Sea surface under the hull: the mean of the four corner heights, as WaveFloat.Solve
 -- computes its surface. Nil only if every corner lookup failed.
@@ -390,12 +391,34 @@ RunService.PostSimulation:Connect(function(dt)
 		end
 		-- Servo authority rises while the hull is below its band, so it can hold a load.
 		local reserve = ShipGuard.ServoReserve(ShipGuard.Gap(here.Y, reference))
+		-- How fast the water itself is moving here, for the relative damping below. A finite
+		-- difference on the surface we already sampled, clamped so a teleport cannot inject a
+		-- huge term, and low-passed so the force does not chase sampling noise.
+		local surfaceVy = 0
+		if surface ~= nil then
+			if state.lastSurface ~= nil and state.lastSurfaceAt ~= nil then
+				local dt = now - state.lastSurfaceAt
+				if dt > 1e-3 and dt < 0.5 then
+					local raw = math.clamp((surface - state.lastSurface) / dt, -30, 30)
+					surfaceVy = state.surfaceVy + (raw - state.surfaceVy) * 0.35
+				end
+			end
+			state.surfaceVy = surfaceVy
+			state.lastSurface = surface
+			state.lastSurfaceAt = now
+		end
 		-- Spring-damper lift on the vertical axis (see BUOY_KP above). `goal` is the mover
 		-- goal in world space, so `goal - here.Y` is the centre-space error.
 		local errY = goal - here.Y
 		local vNow = Main.AssemblyLinearVelocity
 		local mass = Main.AssemblyMass
-		local lift = submerge * mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * vNow.Y)
+		-- Damp against the WATER, not against the world. `KD * vy` resists a hull that is
+		-- merely riding a wave, which is the motion we want it to have: measured on the
+		-- occupied hull at speed, it followed only 29% of the swell (correlation +0.28) and
+		-- the water ran up to 3 studs over the deck. Damping the RELATIVE velocity leaves the
+		-- error dynamics identical (same characteristic equation, so the rest behaviour the
+		-- bounce fix bought is untouched) and removes the false resistance to wave-following.
+		local lift = submerge * mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * (vNow.Y - surfaceVy))
 		buoyancyForce.Force = Vector3.new(0, math.clamp(lift, 0, mass * workspace.Gravity * BUOY_FORCE_CAP), 0)
 		-- Anti-sink: a hull well below its reference is lifted, and contact holds it.
 		local v = Main.AssemblyLinearVelocity

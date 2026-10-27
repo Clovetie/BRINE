@@ -271,7 +271,7 @@ local BUOY_KP, BUOY_KD, BUOY_FORCE_CAP = 12, 32, 3
 local SUBMERGE_RAMP = 1.0
 local errY = goal - here.Y                       -- centre-space error
 local submerge = math.clamp((surface - bottomY) / SUBMERGE_RAMP, 0, 1)
-local lift = submerge * mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * vNow.Y)
+local lift = submerge * mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * (vNow.Y - surfaceVy))
 buoyancyForce.Force = Vector3.new(0, math.clamp(lift, 0, mass * workspace.Gravity * BUOY_FORCE_CAP), 0)
 ```
 
@@ -285,6 +285,10 @@ Three things about that shape are load-bearing, each learned from a measured bou
 * **`KD` = 32, not 8.** The ramp is itself a spring of `g/SUBMERGE_RAMP` = 196 s⁻², far
   stiffer than `KP`; damping sized for `KP` alone (ζ ≈ 0.24) leaves the hull ringing at ~3 Hz
   around an otherwise correct depth. Critical is ~29.
+* **Damp against the water, not the world.** `KD * vy` also resists the motion of a hull
+  riding a wave: measured on an occupied hull driven at 22 studs/s, it followed only 29% of
+  the swell (correlation +0.28) with the water running up over the deck. Subtracting
+  `surfaceVy` leaves the error dynamics identical and lifts the correlation to +0.54/+0.60.
 * **The occupant is not an obstacle.** `touchingOutside()` must ignore parts belonging to the
   seated player, or anti-climb holds every rising frame at zero while the buoyancy lifts —
   and the server must not run its own anti-climb while a player is aboard, because two peers

@@ -403,6 +403,59 @@ Two probe techniques worth remembering, both of which cost time here:
   around Y 24. Do not place probe geometry relative to a union's reported bounds; it lands
   somewhere else and silently reports "no contact".
 
+### The occupied hull under way (2026-10-27, fourth pass)
+
+Everything above is a hull at rest. Driving one is what a player does, so: seat a player, then drive
+the hull **horizontally** from the client at its own top speed (~22 studs/s) across the swell for 9 s
+and compare its vertical motion with the surface under it. The throttle itself could not be driven
+from a probe (`Humanoid:Move` produces `VehicleSeat.Throttle = 0`), so this measures the physics of a
+moving, client-owned hull, not the input path.
+
+First result, with the damping as shipped (`KD * vy`, i.e. damping against the **world**):
+
+| | |
+| --- | --- |
+| hull vertical span | 1.54 studs |
+| surface span under it | 5.25 studs |
+| correlation(hull, surface) | **+0.278** |
+| hull moves | **29%** of the surface's motion |
+| hull-centre-vs-surface | swung up to **5.84 studs** |
+
+So at speed the hull barely followed the swell and the water ran up over the deck. The cause is the
+damping term: `KD * vy` resists a hull that is *merely riding a wave*, which is exactly the motion it
+should have. Damping now acts on the velocity **relative to the water**
+(`KD * (vy - surfaceVy)`, with `surfaceVy` a clamped, low-passed finite difference of the surface
+sampled once more per frame):
+
+```lua
+local lift = submerge * mass * (workspace.Gravity + BUOY_KP * errY - BUOY_KD * (vNow.Y - surfaceVy))
+```
+
+This is the textbook drag form, and the error dynamics are unchanged — substituting `e = x - s` gives
+`ë + KD·ė + KP·e = 0` either way — so the rest behaviour the bounce fix bought is not re-tuned, only
+the forcing changes.
+
+After, correlation **+0.54 and +0.60** across runs (was +0.278): the hull follows the swell
+meaningfully better.
+
+**What I could not show:** the offset *magnitude* did not improve, and repeated runs of the *same*
+build gave offset rms 1.09 / 1.83 / 2.07 and spans 4.64 / 5.94 / 6.56 — a spread wider than the
+before/after difference. Run-to-run sea state swamps that metric in a single 9 s window, so the claim
+here is the correlation and the physical argument, not a smaller error. Measuring it properly needs a
+fixed sea state (a still-water test rig), which does not exist yet.
+
+Rest behaviour re-checked after the change, because that is the thing the user signed off on:
+
+| Hull / path | reversals / 6 s | peak \|vy\| |
+| --- | --- | --- |
+| `WoodenShip`, occupied (client) | **0** (155 frames) | 0.86 |
+| `MisoSoup`, unmanned | 2 | 1.21 |
+| `WoodenShip`, unmanned | 3 | 3.21 |
+
+No ringing anywhere. The unmanned peaks are larger than the earlier table because those runs sat in a
+different sea state and a different spot in it — the hull is *following* the swell (3 reversals in 6 s
+is roughly one swell period), which is the behaviour the acceptance criterion asked for.
+
 ### The original 6 Hz note (kept for the record; the guess in it was wrong)
 
 Sampling every frame shows a real oscillation, not aliasing (position moves with the velocity):
