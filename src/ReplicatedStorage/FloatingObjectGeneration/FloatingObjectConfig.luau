@@ -85,7 +85,12 @@ FloatingObjectConfig.Classes = {
 		ClusterRadius = 26, -- max offset from the cell's jittered center
 		MinSpacing = 12, -- min center distance to other floating records
 		SimDistance = 210, -- within this player distance: full buoyancy sim
-		FloatRatio = 0.6, -- 60% of the height above water
+		-- Fraction of the prop's own height riding above the waterline. Raised from
+		-- 0.6 on the user's report that Small and Medium float too low. The knob only
+		-- became trustworthy with the bounding-box seating fix in
+		-- FloatingObjectGenerator.spawnRecord: before it, each template rode off its
+		-- ratio by the model's pivot offset (Small measured 0.847 when asking 0.6).
+		FloatRatio = 0.7,
 	},
 	-- Medium structures: rafts, dinghies, broken masts.
 	Medium = {
@@ -95,7 +100,7 @@ FloatingObjectConfig.Classes = {
 		ClusterRadius = 14,
 		MinSpacing = 26,
 		SimDistance = 250,
-		FloatRatio = 0.6,
+		FloatRatio = 0.7, -- raised from 0.6 with Small; measured 0.502 when asking 0.6
 	},
 	-- Large structures: wrecks, floating docks, ruined hulls.
 	Large = {

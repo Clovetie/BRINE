@@ -349,3 +349,38 @@ Every hull read `ShipDrive.Defaults`, so the 125-stud, 19 565-mass `MisoSoup` ha
 exists for the docs/harness), with values set in Studio for the three hulls: top speeds 26.0 / 18.0 /
 13.9 studs/s and turn radii 113 / 163 / 58 studs against the reference's 29.1 / 58.2. See
 `07-ships.md` §4.
+
+
+### D-20 (new, 2026-10-27, **FIXED**): the floating-object system never started
+
+`ServerScriptService.FloatingObjectGenerationServer:45` read `Config.Streaming.CameraMinReportInterval`
+where `Config` was never defined in that file (the script required `FloatingObjectGenerator`, which
+returns functions only). The top-level error (`attempt to index nil with 'Streaming'`) killed the script
+before the `task.spawn(Generate())` at its bottom, so **no floating object has been generated or streamed
+for as long as that line has been broken**: `rendered=0, streamed=false, SpawnAttempts=0`. Fixed by
+requiring `FloatingObjectConfig`. After the fix: 35 spawns, 23 rendered, 74 cached records, `streaming=true`.
+See `08-floating.md` §3.
+
+### D-21 (new, 2026-10-27, **FIXED**): frozen props seated by pivot instead of box centre
+
+`spawnRecord` computed a *box-centre* float height and applied it to `model:PivotTo`, but `GetPivot` is
+whatever the modeller left — up to 1.5 studs off the box centre and in a different direction per template
+(Small `PlankDebris` −0.89, Medium `Lifeboat` +0.68). Measured: Small asking 0.6 rode 0.847 of its height
+above water, Medium asking 0.6 rode 0.392. That is why `FloatRatio` "did not work". The buoyant path
+already drove the box centre, so the two paths also disagreed. Fixed by rotating about the box centre and
+then translating it onto the float height. After: Small 0.713 and Medium 0.608 for a 0.70 ask. See
+`08-floating.md` §4.
+
+### D-22 (new, 2026-10-27, **HARDENED**): the sight rule held by exactly zero margin
+
+`Streaming.CacheDistance` and `Streaming.CameraMaxDistance` were both 900. The far branch of
+`recordHasInterest` caches anything beyond `CacheDistance` with no sight test, which is only safe while
+`CacheDistance >= CameraMaxDistance`. Added a guarded camera check that runs only if the two cross, so the
+invariant cannot be broken by a config edit. Zero cost today. See `08-floating.md` §6.
+
+### D-23 (new, recorded, **not** changed): no rendered prop is ever in the near band
+
+`Buoyancy.NearDistance` is 150 but `Streaming.MinPlayerDistance` is 200, so nothing may render closer than
+200 studs and no rendered prop can enter the fast-cadence band; every prop runs `SoftResponsiveness` 8 at
+`UpdateInterval` 0.12 while the ship runs `Responsiveness` 12 every frame. This is the likeliest reason
+props track the waves more loosely than the ship. A taste/perf trade — recorded for the user, not changed.

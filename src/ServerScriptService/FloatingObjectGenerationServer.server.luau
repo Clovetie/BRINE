@@ -28,6 +28,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- Wait for the module folder (Rojo can replicate slightly after scripts run).
 local folder = ReplicatedStorage:WaitForChild("FloatingObjectGeneration")
 local FloatingObjectGenerator = require(folder:WaitForChild("FloatingObjectGenerator"))
+-- The generator module returns functions only; the streaming knobs live in the
+-- config module. Without this require `Config.Streaming` below is nil at line 45,
+-- which threw before Generate() was ever scheduled and left the entire floating
+-- object system dead: no cells, no records, no rendered props, and
+-- GetStats().Streaming stayed false.
+local Config = require(folder:WaitForChild("FloatingObjectConfig"))
 
 -- The CameraReport RemoteEvent ships with the folder via Rojo
 -- (CameraReport.model.json). Create a fallback at runtime if it is missing so

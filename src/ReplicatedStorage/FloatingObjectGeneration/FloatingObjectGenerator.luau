@@ -1381,7 +1381,7 @@ local function spawnRecord(record, wantFrozen: boolean?): Model?
 	-- PLANE_Y meant every prop had to be dragged up out of a trough (or dropped
 	-- into one) the instant it appeared, which is exactly the pop-in the ship
 	-- never has because it is seated on the wave it is standing on.
-	local _, bboxSize = model:GetBoundingBox()
+	local bboxCFrame, bboxSize = model:GetBoundingBox()
 	local buoyancyConfig = getBuoyancyConfig()
 	local surfaceY = WaveFloat.HeightAt(
 		record.centerPos,
@@ -1390,9 +1390,35 @@ local function spawnRecord(record, wantFrozen: boolean?): Model?
 		buoyancyConfig.LookupMethod or "PRECISE",
 		now
 	) or PLANE_Y
-	local pivotY = surfaceY + bboxSize.Y * ((record.floatRatio or 0.5) - 0.5)
-	local pivot = CFrame.new(record.centerPos.X, pivotY, record.centerPos.Z) * CFrame.Angles(0, record.yaw, 0)
-	model:PivotTo(pivot)
+	local centreY = surfaceY + bboxSize.Y * ((record.floatRatio or 0.5) - 0.5)
+
+	-- Seat the BOUNDING-BOX CENTRE, not the model's pivot. `GetBoundingBox` returns the
+	-- box centre in world space, but `GetPivot` is wherever the modeller happened to
+	-- leave it - on these templates up to 1.5 studs from the centre, and in a different
+	-- direction per template (PlankDebris' pivot is 0.89 BELOW its centre, Lifeboat's
+	-- 0.68 ABOVE). Seating the pivot therefore displaced every prop from its own ratio
+	-- by that amount, so two props of the same class rode at different heights whatever
+	-- `FloatRatio` said. Measured at spawn, before this change: Small asking 0.60 rode
+	-- 0.847 of its height above water, Medium asking 0.60 rode 0.392.
+	--
+	-- The buoyant path below already drives the box centre (its mover attachment is
+	-- placed at `bboxCFrame`), so this also makes the two paths agree.
+	--
+	-- Rotate about the box centre first, so the yaw does not move it, then translate the
+	-- box centre onto its float height.
+	local centre = bboxCFrame.Position
+	model:PivotTo(CFrame.new(centre) * CFrame.Angles(0, record.yaw, 0) * CFrame.new(-centre) * model:GetPivot())
+	local rotated = model:GetBoundingBox()
+	local pivot = model:GetPivot()
+	local delta = Vector3.new(
+		record.centerPos.X - rotated.Position.X,
+		centreY - rotated.Position.Y,
+		record.centerPos.Z - rotated.Position.Z
+	)
+	-- Translate only: keep the rotation step 1 just applied. (CFrame + Vector3 would
+	-- be shorter but the smoke harness's CFrame mock has no `__add`; staying with
+	-- CFrame composition keeps the tests running against the real code path.)
+	model:PivotTo(CFrame.new(pivot.Position + delta) * pivot:ToObjectSpace(CFrame.new(pivot.Position)))
 
 	-- Seed the cadence band so a PlaceOne()/debug spawn near a player starts
 	-- in the near band instead of waiting for the next streaming cycle.
@@ -1793,6 +1819,20 @@ local function recordHasInterest(record, now: number): (boolean, boolean)
 	end
 
 	if nearestSq > cacheDistance * cacheDistance then
+		-- CacheDistance is what the far test uses, and CameraMaxDistance is how
+		-- far a camera report can claim to see. The sight rule only holds while
+		-- CacheDistance >= CameraMaxDistance (both are 900 today, so this costs
+		-- nothing); if the two ever cross, an object between them is visible and
+		-- would otherwise be cached with no sight test at all. Check the camera
+		-- only in that case.
+		if
+			record.rendered
+			and (streamingConfig.CameraMaxDistance or 800) > cacheDistance
+			and isSeenByAnyCamera(pos, now, 15)
+		then
+			record.unseenSince = nil
+			return true, true
+		end
 		return false, false
 	end
 	if nearestSq <= simDistance * simDistance then
