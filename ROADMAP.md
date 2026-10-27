@@ -149,3 +149,25 @@ releases). See [`tools/README.md`](tools/README.md).
 - Don't delete the orphaned ocean API — it's the intended interface.
 - Don't break Rojo naming rules (Folder-with-children uses `init.luau`).
 - Don't put generated artifacts/large datasets in Git.
+
+---
+
+## Audit pass — verified state (2026-10-26 / 27)
+
+The eight-prompt audit (`docs/agent-prompts/01`–`09`, branch `arena/ocean-sound-and-audit`, PR #9)
+re-measured the phase claims above and fixed what it found. Per-area evidence lives in
+`docs/audit/01`–`09`. Summary of what changed and what was verified:
+
+| Area | Verified state | Evidence |
+| --- | --- | --- |
+| Vertex jitter / wave collision | `WaveFloat.HeightAt` inverts the Gerstner horizontal displacement (S2). Physics-vs-mesh height error p99 **1.2986 → 0.0094 studs** in a rough sea (A1 target ≤ 0.1). Cost 4.0× the naive read. The surface **never folds**: 0 folds at every shipped sea state, including the `RoughSeaArea` zone at `AmplitudeMultiplier 2.5`. | `02-waves-findings`, `04-seam-zones` |
+| Ocean performance | `FAR_WRITE_EVERY` 3 → 1 removes the distant 20 Hz stepping. 127 → 225 writes per worker, **+0.077 ms/worker ≈ +0.46 ms/frame**. | `03-perf` |
+| Render seam | Fog 500→880, mesh extent ±936, farthest plane edge ~2808 = 2.1× the fog end. No seam is visible by those numbers. | `04-seam-zones` |
+| Ships | Buoyancy is a **spring-damper force**, not an `AlignPosition`: the servo could not hold a hull without oscillating and its airborne gate tested the hull centre instead of the bottom. Vertical reversals **24 → 0**, peak \|vy\| **31.2 → 2.0 studs/s**. Each hull has its own handling profile (top speeds 26.0 / 18.0 / 13.9 against the reference's 29.1). | `07-ships` |
+| Floating objects | The system was **not running at all** (a nil `Config` at `FloatingObjectGenerationServer:45` threw before `Generate()`). Fixed. Float height was seated by model pivot instead of bounding-box centre, so `FloatRatio` did nothing coherent; fixed, and Small/Medium raised 0.6 → 0.7. No-despawn-in-sight passes on all three paths. | `08-floating` |
+| Sound | All 12 user IDs load at their documented lengths; calm/rough/depth/night mix verified. **The mix has never been judged by ear.** | `05-sound` |
+| Fishing | No movers anywhere in the fishing path; grab is a per-cast `DragDetector`. Parity clean. | `06-fishing` |
+| Repo ↔ Studio | **39/39 pairs byte-identical** by hash (`tools/studio-probes/bridge/parity_hash.py`), 79 scripts. | `09-sweep` |
+
+Open items with owners are listed in `docs/audit/01-defects.md` (triage table) and
+`docs/agent-prompts/10-continue.md` §5.
