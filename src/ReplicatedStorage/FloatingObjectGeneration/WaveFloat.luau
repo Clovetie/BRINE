@@ -64,6 +64,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Gerstner = require(ReplicatedStorage.Gerstner)
 local Settings = require(ReplicatedStorage.Gerstner.Settings)
+local Helper = require(ReplicatedStorage.Gerstner.Helper)
 local HeightLookup = require(ReplicatedStorage.Gerstner.HeightLookup)
 
 local Waves = Settings.Waves
@@ -85,7 +86,72 @@ local abs = math.abs
 local atan2 = math.atan2
 local min = math.min
 
+-- The mesh draws a near-shore vertex at only a fraction of its wave height (Helper applies
+-- `SHORE_HEIGHT_FACTOR` in both LOD paths). Physics was NOT applying it, so a crate beached in
+-- the shallows bobbed with the full wave while the water around it moved by 15% of that - a real
+-- R8 disagreement, not a rounding error. Both sides now read the one constant.
+local SHORE_HEIGHT_FACTOR = Helper.SHORE_HEIGHT_FACTOR or 0.15
+
+-- `Helper.GetVertexTransparency` caches its raycasts in a SharedTable (that is how the worker keeps
+-- it off the per-vertex hot path). Physics gets its own private cache rather than writing into the
+-- mesh's `VertexTransparency` table: the two run on different machines and on different clocks, and
+-- sharing one cache would let a client's island set decide a server's buoyancy. Only reachable
+-- while DEPTH_ENABLED is true, which is not the shipped configuration.
+local SHORE_TABLE = nil
+local shoreTableTried = false
+local function getShoreTable()
+	if shoreTableTried then
+		return SHORE_TABLE
+	end
+	shoreTableTried = true
+	local registry = game:GetService("SharedTableRegistry")
+	local ok, table_ = pcall(function()
+		return registry:GetSharedTable("WaveFloatShoreCache")
+	end)
+	if not (ok and table_) then
+		local made, fresh = pcall(function()
+			local t = SharedTable.new()
+			registry:SetSharedTable("WaveFloatShoreCache", t)
+			return t
+		end)
+		-- // plain if/else, not an if-expression: the smoke harness's loader is luaparse-based
+		-- // (defect D-16) and cannot parse Luau if-expressions.
+		if made then
+			table_ = fresh
+		else
+			table_ = nil
+		end
+	end
+	SHORE_TABLE = table_
+	return SHORE_TABLE
+end
+
 local WaveFloat = {}
+
+--[[
+	Which clock a caller passes as `t`.
+
+	The ocean mesh is displaced with `workspace:GetServerTimeNow()`. Every consumer of this module
+	has to pass the same clock or the physics rides a different wave than the one drawn, and the
+	error is a phase shift, not a constant offset - it looks like a ship "floating wrong" and it is
+	invisible to any test that samples one surface. `WaveFloat.CheckClock(t)` is a cheap guard for
+	DEBUG builds: it warns (once per module load per magnitude of error) when a caller passes
+	`tick()`/`os.clock()`-style time instead.
+]]
+local clockWarned = false
+function WaveFloat.CheckClock(t: number)
+	if Settings.DEBUG ~= true or clockWarned or t == nil then
+		return
+	end
+	local now = workspace:GetServerTimeNow()
+	if abs(now - t) > 5 then
+		clockWarned = true
+		warn(string.format(
+			"WaveFloat: sample time %.3f is %.1f s away from workspace:GetServerTimeNow(); the water is drawn with the server clock, so pass that (or a time derived from it).",
+			t, t - now
+		))
+	end
+end
 
 -- Sampling -------------------------------------------------------------------
 
@@ -172,9 +238,19 @@ function WaveFloat.HeightAt(point: Vector3, zone, source: string?, method: strin
 		amplitude = zone.AmplitudeMultiplier or 1
 	end
 
+	-- `zone` is optional everywhere in this module, so `zone.CURRENT_ZONE` has to be reached
+	-- through a guard: the MESH path used to index it directly and threw for every caller that
+	-- passed no zone (the swimming, fishing and ambience callers all do).
+	local currentZone = nil
+	if zone ~= nil then
+		currentZone = zone.CURRENT_ZONE
+	end
+
+	WaveFloat.CheckClock(t)
+
 	if source == "MESH" then
 		local height =
-			HeightLookup.Lookup(point, method or "PRECISE", false, speed, phase, amplitude, zone.CURRENT_ZONE)
+			HeightLookup.Lookup(point, method or "PRECISE", false, speed, phase, amplitude, currentZone)
 		if height == LOOKUP_FAILED or height ~= height then
 			return nil
 		end
@@ -183,11 +259,23 @@ function WaveFloat.HeightAt(point: Vector3, zone, source: string?, method: strin
 
 	local height = surfaceHeight(point, t, phase, speed, amplitude)
 
-	local currentZone = zone and zone.CURRENT_ZONE
 	if currentZone ~= nil and currentZone.Type == "Whirlpool" then
 		-- Same call HeightLookup makes for its PRECISE triangles: the vortex
 		-- pulls the surface down and floaters have to follow it down.
 		height = height + Gerstner.GetVortexTransform(currentZone, point, nil, t, nil).Y
+	end
+
+	-- Draw-parity with the mesh: near-shore vertices are scaled toward the waterline, so the
+	-- height reported here is scaled toward the waterline by the same factor. Only the wave
+	-- displacement is scaled - PLANE_Y, the waterline itself, is not.
+	if Settings.DEPTH_ENABLED == true then
+		local shoreTable = getShoreTable()
+		if shoreTable ~= nil then
+			local shore = Helper.GetVertexTransparency(point, shoreTable, 1)
+			if Helper.IsVertexNearShore(shore) then
+				height = PLANE_Y + (height - PLANE_Y) * SHORE_HEIGHT_FACTOR
+			end
+		end
 	end
 	return height
 end

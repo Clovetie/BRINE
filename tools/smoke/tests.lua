@@ -96,6 +96,20 @@ local BoatManagerMock = {
 	end,
 }
 
+-- WaveFloat reads the near-shore height factor and the shore test from Helper so the mesh and the
+-- physics cannot disagree about it (docs/audit/11-worker.md P1). The mock mirrors the shipped
+-- constants: SHORE_HEIGHT_FACTOR = 1 - 0.85 and "near shore" means transparency < 0.85.
+local HelperMock = {
+	SHORE_HEIGHT_FACTOR = 1 - 0.85,
+	CREST_ENVELOPE = 4.7317,
+	GetVertexTransparency = function()
+		return 1
+	end,
+	IsVertexNearShore = function(transparency)
+		return transparency < 0.85
+	end,
+}
+
 local HeightLookupMock = {
 	Lookup = function(point)
 		LOOKUP_CALLS += 1
@@ -204,6 +218,8 @@ seedValue.Value = 424242
 seedValue.Parent = settingsInst
 local heightLookupInst = newInstance("ModuleScript", "HeightLookup")
 heightLookupInst.Parent = gerstner
+local helperInst = newInstance("ModuleScript", "Helper")
+helperInst.Parent = gerstner
 local serial = newInstance("Folder", "Serial")
 serial.Parent = gerstner
 local boatManagerInst = newInstance("ModuleScript", "BoatManager")
@@ -235,6 +251,7 @@ cameraReportInst.Parent = fogFolder
 local MODULES = {}
 MODULES[settingsInst] = { loaded = SettingsMock }
 MODULES[heightLookupInst] = { loaded = HeightLookupMock }
+MODULES[helperInst] = { loaded = HelperMock }
 MODULES[boatManagerInst] = { loaded = BoatManagerMock }
 MODULES[zoneManagerInst] = { loaded = ZoneManagerMock }
 MODULES[octreeInst] = { loaded = octreeStub }

@@ -70,14 +70,11 @@ local HeightLookup = require(ReplicatedStorage.Gerstner.HeightLookup)
 local _settings = require(ReplicatedStorage.Gerstner.Settings)
 local Types = require(ReplicatedStorage.Gerstner.Types)
 
-local clamp = math.clamp
 local XZ_INCLUDE = Vector3.new(1, 0, 1)
-local Y_AXIS = Vector3.yAxis
 local v3new = Vector3.new
-local v3zero = Vector3.zero
-local v3one = Vector3.one
 
-local LERP_MAX_FRAMES = 30 -- // How many frames a vertex will 'lerp' for
+-- // LERP_MAX_FRAMES is defined once, in Settings: the worker owns the lerp state machine, and a
+-- // second copy here was dead weight that could drift out of step with it.
 local WORKER_COUNT = _settings.WORKER_COUNT
 
 local GRID_SETTINGS = _settings.GRID_SETTINGS
@@ -106,6 +103,9 @@ do
 	local _CHUNKS = {}
 	local _QUADS: any = {}
 	local _TRIANGLES: any = {}
+	-- // Every chunk's vertices in the order they were inserted. This is what gets sent to the
+	-- // worker (one flat array per chunk) instead of the whole grid keyed by Vector3.
+	local ChunkVertexList: { [Vector3]: { number } } = {}
 
 	Setup._QUADS = _QUADS
 	Setup._TRIANGLES = _TRIANGLES
@@ -181,7 +181,11 @@ do
 			if _CHUNKS[Position] == nil then
 				ChunkCount += 1
 				_CHUNKS[Position] = {VertexId}
-				
+				ChunkVertexList[Position] = {VertexId}
+
+				-- // The main thread's entry is the ISLAND/ZONE tag only. `Rendering` is the worker's
+				-- // own state; it is carried here (always false) purely because the worker's entry
+				-- // type expects the field, and it is never sent back and forth.
 				local Info: Types.ChunkKey = {
 					Rendering = false,
 					ISLAND = nil,
@@ -189,6 +193,7 @@ do
 				ChunkInfo[Position] = Info
 			else
 				table.insert(_CHUNKS[Position], VertexId)
+				table.insert(ChunkVertexList[Position], VertexId)
 			end
 		end
 
@@ -199,27 +204,44 @@ do
 	-- // It is done this way so that each worker has an equal amount of chunks to iterate through
 	-- // so the load is balanced across all the workers
 
+	-- // Assign chunks to workers round-robin, but over a list sorted by distance from the plane's
+	-- // centre: hash iteration order is arbitrary, which occasionally hands one worker all the near
+	-- // chunks (more vertices, more island multiplier calls) and another all the far ones. Sorted
+	-- // round-robin gives every worker a spread from near to far, which is what makes the parallel
+	-- // section finish together.
+	local SortedOffsets = {}
+	for ChunkPosition in _CHUNKS do
+		table.insert(SortedOffsets, ChunkPosition)
+	end
+	table.sort(SortedOffsets, function(a, b)
+		return (a.X * a.X + a.Z * a.Z) < (b.X * b.X + b.Z * b.Z)
+	end)
+
 	local WorkerAssignments = {}
 	local ChunkToWorker = {}
-	local i = 0
-	for ChunkPosition, Vertices in _CHUNKS do
-		i += 1
+	for i, ChunkPosition in SortedOffsets do
 		local worker_index = (i - 1) % WORKER_COUNT + 1
 		table.insert(CI, ChunkPosition)
 
 		if not WorkerAssignments[worker_index] then
 			WorkerAssignments[worker_index] = {
-				AssignedChunks = {},
-				VertexInfo = {},
-				ChunkInfo = {},
+				-- // Arrays of pairs, because a table keyed by Vector3 is stringified across the VM
+				-- // boundary and has to be regex-parsed back. Values survive; keys do not.
+				ChunkList = {},
+				VertexList = {},
+				Seen = {},
 			}
 		end
+		local Assignment = WorkerAssignments[worker_index]
+		local Vertices = ChunkVertexList[ChunkPosition]
+		table.insert(Assignment.ChunkList, { ChunkPosition, Vertices })
 		for n, VertexId in Vertices do
-			WorkerAssignments[worker_index].VertexInfo[VertexId] = VertexInfo[VertexId]
+			if Assignment.Seen[VertexId] == nil then
+				Assignment.Seen[VertexId] = true
+				table.insert(Assignment.VertexList, { VertexId, VertexInfo[VertexId] })
+			end
 		end
-		WorkerAssignments[worker_index].ChunkInfo[ChunkPosition] = ChunkInfo[ChunkPosition]
 
-		table.insert(WorkerAssignments[worker_index].AssignedChunks, ChunkPosition)
 		ChunkToWorker[ChunkPosition] = workers[worker_index]
 	end
 
@@ -249,15 +271,13 @@ do
 		SharedTableRegistry:SetSharedTable('VertexTransparency', VertexTransparencyArray)
 
 		for worker_index, _DATA in WorkerAssignments do
-			local AssignedChunks = _DATA.AssignedChunks
-			local AssociatedVertexInfo = _DATA.VertexInfo
-			local AssociatedChunkInfo = _DATA.ChunkInfo
-
 			local worker = workers[worker_index]
 			if _settings.DEBUG == true then
-				warn('Sending compute message to worker ' .. tostring(worker_index) .. ' for chunks ', AssignedChunks)
+				warn('Sending compute message to worker ' .. tostring(worker_index) .. ' for ' .. tostring(#_DATA.ChunkList) .. ' chunks, ' .. tostring(#_DATA.VertexList) .. ' vertices')
 			end
-			worker:SendMessage('Compute', _settings.Waves, Plane, EditableMesh, AssignedChunks, AssociatedVertexInfo, AssociatedChunkInfo, _CHUNKS)
+			-- // Each worker now receives only its OWN chunks and vertices. It used to receive all of
+			-- // _CHUNKS and the whole VertexInfo table, six times over.
+			worker:SendMessage('Compute', _settings.Waves, Plane, EditableMesh, _DATA.ChunkList, _DATA.VertexList)
 		end
 
 	end)
@@ -273,7 +293,7 @@ do
 		local FilledChunks = {}
 
 		for i, Node in NearbyIslands do
-			-- // There are island(s) near the camera, and thus, they are also in our grid			
+			-- // There are island(s) near the camera, and thus, they are also in our grid
 			local Island, Radius = Node.Object.Island, Node.Object.Radius
 			local IslandCenter = Node.Position
 			for ChunkOffset, Vertices in _CHUNKS do
@@ -290,8 +310,14 @@ do
 						[2] = Radius / 2,
 					}
 					FilledChunks[ChunkOffset] = Distance
-					ChunkInfo[ChunkOffset].ISLAND = Info
-					ChunkToWorker[ChunkOffset]:SendMessage('UpdateChunk', ChunkOffset, ChunkInfo[ChunkOffset])
+					local Cached = ChunkInfo[ChunkOffset]
+					if Cached.ISLAND == nil or Cached.ISLAND[1] ~= Info[1] or Cached.ISLAND[2] ~= Info[2] then
+						Cached.ISLAND = Info
+						-- // Send only the tags. Sending the whole entry used to arrive as a fresh table
+						-- // in the worker and reset its `Rendering` flag, which snapped every
+						-- // low-detail vertex in the chunk out of its lerp: a pop on every retag.
+						ChunkToWorker[ChunkOffset]:SendMessage('UpdateChunk', ChunkOffset, { ISLAND = Info, ZONE = Cached.ZONE })
+					end
 				end
 			end
 		end
@@ -300,7 +326,7 @@ do
 				local Info = ChunkInfo[ChunkOffset]
 				if Info.ISLAND ~= nil then
 					Info.ISLAND = nil
-					ChunkToWorker[ChunkOffset]:SendMessage('UpdateChunk', ChunkOffset, ChunkInfo[ChunkOffset])
+					ChunkToWorker[ChunkOffset]:SendMessage('UpdateChunk', ChunkOffset, { ISLAND = nil, ZONE = Info.ZONE })
 				end
 			end
 		end
@@ -327,8 +353,11 @@ do
 						[2] = ZoneParameters,
 					}
 					FilledChunks[ChunkOffset] = true
-					ChunkInfo[ChunkOffset].ZONE = Info
-					ChunkToWorker[ChunkOffset]:SendMessage('UpdateChunk', ChunkOffset, ChunkInfo[ChunkOffset])
+					local Cached = ChunkInfo[ChunkOffset]
+					if Cached.ZONE == nil or Cached.ZONE[2] ~= Info[2] then
+						Cached.ZONE = Info
+						ChunkToWorker[ChunkOffset]:SendMessage('UpdateChunk', ChunkOffset, { ISLAND = Cached.ISLAND, ZONE = Info })
+					end
 				end
 			end
 		end
@@ -337,7 +366,7 @@ do
 				local Info = ChunkInfo[ChunkOffset]
 				if Info.ZONE ~= nil then
 					Info.ZONE = nil
-					ChunkToWorker[ChunkOffset]:SendMessage('UpdateChunk', ChunkOffset, ChunkInfo[ChunkOffset])
+					ChunkToWorker[ChunkOffset]:SendMessage('UpdateChunk', ChunkOffset, { ISLAND = Info.ISLAND, ZONE = nil })
 				end
 			end
 		end
@@ -362,8 +391,10 @@ do
 		local ObjectPosition = PlanePosition * Vector3.yAxis + (CameraPosition - modPosition)
 
 		if LastPlanePosition ~= ObjectPosition then
-			UpdateIslands()
-			UpdateZones()
+			-- // Move the plane FIRST, then retag. UpdateIslands/UpdateZones measure each chunk as
+			-- // `Plane.Position + ChunkOffset`, so retagging before the move tagged every chunk
+			-- // against the previous snap position — the tags were one snap (and up to 250 ms, the
+			-- // loop period) wrong, every time the camera crossed a grid cell.
 			Plane.Position = ObjectPosition
 
 			for i, SecondaryPlane in SecondaryPlanes do
@@ -372,6 +403,9 @@ do
 
 				SP.Position = ObjectPosition + Offset
 			end
+
+			UpdateIslands()
+			UpdateZones()
 		end
 
 		LastPlanePosition = ObjectPosition

@@ -28,6 +28,20 @@ HEIGHTLOOKUP_STUB = {
 	ClientInit = function() end,
 }
 Gerstner.Settings = SETTINGS_STUB
+-- WaveFloat reads the near-shore height factor and the shore test from Helper, so the mesh and the
+-- physics cannot disagree about it. This stub mirrors the shipped constants; DEPTH_ENABLED is false
+-- in the stub Settings, so the shore branch is never taken and the height numbers below are the
+-- open-water ones (which is what this harness measures).
+Gerstner.Helper = {
+	SHORE_HEIGHT_FACTOR = 1 - 0.85,
+	CREST_ENVELOPE = 4.7317,
+	GetVertexTransparency = function()
+		return 1
+	end,
+	IsVertexNearShore = function(transparency)
+		return transparency < 0.85
+	end,
+}
 Gerstner.HeightLookup = HEIGHTLOOKUP_STUB
 REPLICATED_STORAGE_STUB = { Gerstner = Gerstner }
 game = {

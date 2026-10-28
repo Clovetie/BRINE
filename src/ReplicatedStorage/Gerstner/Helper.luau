@@ -48,6 +48,12 @@ for _, Wave in _settings.Waves do
 end
 CREST_ENVELOPE = math.max(CREST_ENVELOPE, 1e-3)
 
+-- // How much of its wave height a near-shore vertex keeps. The mesh multiplies a near-shore
+-- // vertex by this in both LOD paths; WaveFloat applies the same factor to the height it reports,
+-- // so a crate in the shallows bobs exactly as much as the water it is drawn in. One constant,
+-- // two readers - do not inline it again.
+Helper.SHORE_HEIGHT_FACTOR = 1 - 0.85
+
 local function HeightToBlend(TransformY: number): number
 	-- // 0 at the deepest trough the wave set can make, 0.5 at the waterline, 1 at the highest crest.
 	return clamp((TransformY / CREST_ENVELOPE) * 0.5 + 0.5, 0, 1)

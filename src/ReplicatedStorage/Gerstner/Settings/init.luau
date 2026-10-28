@@ -120,6 +120,15 @@ local Settings = {
 	MeshDetailDistance = 120,
 	MaxChunkRenderDistance = 800,
 
+	-- // Frames a far vertex lerps between goal positions. Owned here because the worker's LOD state
+	-- // machine is the only thing that uses it (the main thread used to keep a dead copy).
+	LERP_MAX_FRAMES = 30,
+
+	-- // Height bands per crest envelope for the colour-write gate. 64 bands over 4.7317 studs is
+	-- // 0.074 studs per band, below the step where a colour change is visible, and it lets the worker
+	-- // skip a SetColor for a vertex whose colour would move by less than one band.
+	COLOR_BUCKETS = 64,
+
 	Subdivisions = {
 		[1] = 400,
 		[2] = 200,
@@ -180,6 +189,9 @@ local Settings = {
 		-- // a low-detail vertex is written every frame; beyond it, every FAR_WRITE_EVERY_BEYOND'th.
 		-- // 400 studs is the same edge the far field already uses for its flat colour
 		-- // (LowRenderDistance * 2), so the two LOD shortcuts change over together.
+		-- // Every N>1 here is a measured step: 2 -> 0.056 studs mean / 0.109 max (0.07 / 0.14 px);
+		-- // 3 -> 0.084 / 0.16 (0.11 / 0.21 px). 3 is safe if the frame budget ever needs it back,
+		-- // 1 restores the pre-2026-10-27 behaviour exactly.
 		FAR_WRITE_DISTANCE = 400,
 		FAR_WRITE_EVERY_BEYOND = 2,
 		REPORT_EVERY = 0, -- // dev only: warn a write-time summary every N frames per worker (0 = off)

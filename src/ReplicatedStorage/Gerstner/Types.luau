@@ -15,6 +15,13 @@ export type VertexKey = {
 	AlphaTransparency: number,
 	CurrentColor: Color3,
 	QUALITY_LEVEL: number,
+
+	-- // Caches of what is actually IN THE MESH, and the world-position epoch they were computed
+	-- // for. `ShoreT` is the cached shore transparency (a function of world position only), and
+	-- // `ColorBucket` is the quantised height band whose colour was last written. Both may only
+	-- // advance when the corresponding write happens, or the mesh silently keeps a stale value.
+	ShoreT: number?,
+	ColorBucket: number?,
 }
 export type ChunkKey = {
 	Rendering: boolean,

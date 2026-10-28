@@ -299,6 +299,27 @@ The user reported "further water optimisation and visual artefacts (it's current
   two zones) and "zones only applied when the plane re-snaps" (a camera pinned from t = 2 s still
   gets the funnel).
 
+## 3e. After the 2026-10-28 worker pass
+
+The ocean's three runtime files were reviewed externally and every claim was checked. `docs/audit/11-worker.md`
+has the item-by-item verdicts; the short version:
+
+* **Fixed**: the far-band colour race (state advanced on skipped frames, in both directions), the
+  `UpdateChunk` entry replacement that reset `Rendering` and popped chunks on every retag, the
+  retag order that measured chunks against the pre-move plane, `WaveFloat`'s nil-zone crash on the
+  MESH path, the shore factor that only the mesh applied, an unconditional print, a dead `FOV`
+  listener, and the per-vertex table allocation in the worker.
+* **New contract**: `Compute(waves, Plane, EditableMesh, ChunkList, VertexList)` and
+  `UpdateChunk(Offset, {ISLAND, ZONE})`. No Vector3-keyed tables cross the VM boundary any more, each
+  worker receives only its own grid, and the `%-?%d+` regex parse is gone.
+* **Measured**: colour writes per position write **0.874 → 0.490 (−44 %)**, total API calls per vertex
+  **2.16 → 1.68 (−22 %)**, serial ms per call flat at **0.90–0.94 µs** (which confirms the cost model),
+  `HeightAt` p99 unchanged at **0.0094** studs, and the mesh still animating with no worker errors.
+* **Careful**: the first A/B was invalid because the Studio viewport changed between sessions
+  (1891×878 vs 953×878) — compare per written vertex, never per frame, on this host.
+* **Open**: the round-robin re-sort's parallel-time benefit is unmeasured; the 1/64 colour quantisation
+  has not been looked at by eye.
+
 ## 4. Rules from the user (do not break)
 
 Carried forward from `00-README.md`, plus what changed this session:
